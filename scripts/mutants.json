@@ -1,0 +1,164 @@
+[
+  {
+    "name": "address: control characters refused",
+    "file": "src/config.js",
+    "from": "if (/[\\u0000-\\u001f\\u007f]/.test(text) || text.length > 300) {",
+    "to": "if (text.length > 300) {"
+  },
+  {
+    "name": "client: body cut at the limit",
+    "file": "src/iometer/client.js",
+    "from": "if (size > limit) {",
+    "to": "if (size > limit * 1000) {"
+  },
+  {
+    "name": "client: declared length checked first",
+    "file": "src/iometer/client.js",
+    "from": "declared > limit",
+    "to": "declared > limit * 1000"
+  },
+  {
+    "name": "client: redirect never followed",
+    "file": "src/iometer/client.js",
+    "from": "redirect: 'manual'",
+    "to": "redirect: 'follow'"
+  },
+  {
+    "name": "model: unknown energy unit refused",
+    "file": "src/iometer/model.js",
+    "from": "  else if (unit === 'kWh') kwh = value;\n  else return undefined;",
+    "to": "  else kwh = value;"
+  },
+  {
+    "name": "model: numbers only",
+    "file": "src/iometer/model.js",
+    "from": "typeof value === 'number' && Number.isFinite(value) ? value : undefined",
+    "to": "Number.isFinite(Number(value)) ? Number(value) : undefined"
+  },
+  {
+    "name": "model: no battery on mains",
+    "file": "src/iometer/model.js",
+    "from": "core.powerStatus !== 'wired' && ",
+    "to": ""
+  },
+  {
+    "name": "model: 36.7.0 fallback only without 16.7.0",
+    "file": "src/iometer/model.js",
+    "from": "net !== undefined || reg(OBIS.POWER) ? net",
+    "to": "net !== undefined ? net"
+  },
+  {
+    "name": "model: power bound",
+    "file": "src/iometer/model.js",
+    "from": "Math.abs(watts) <= POWER_MAX",
+    "to": "true"
+  },
+  {
+    "name": "model: phases only with 16.7.0",
+    "file": "src/iometer/model.js",
+    "from": "phases: reg(OBIS.POWER)\n",
+    "to": "phases: true\n"
+  },
+  {
+    "name": "devices: power taken never below 0",
+    "file": "src/devices.js",
+    "from": "isNumber(reading.power) ? Math.max(0, reading.power) : NaN",
+    "to": "reading.power"
+  },
+  {
+    "name": "devices: counter floor",
+    "file": "src/devices.js",
+    "from": "round(value, 3) >= (floors.get(key) ?? 0)",
+    "to": "true"
+  },
+  {
+    "name": "devices: counter never 0",
+    "file": "src/devices.js",
+    "from": "isNumber(value) && value > 0 && round",
+    "to": "isNumber(value) && round"
+  },
+  {
+    "name": "app: frozen reading not published",
+    "file": "src/app.js",
+    "from": "this.isStale(mono) ? [] : liveStates",
+    "to": "false ? [] : liveStates"
+  },
+  {
+    "name": "app: status published once",
+    "file": "src/app.js",
+    "from": "    status.fresh = false;\n    const created",
+    "to": "    const created"
+  },
+  {
+    "name": "app: unreadable /data never written over",
+    "file": "src/app.js",
+    "from": "    if (!current) {\n      // Never written",
+    "to": "    if (false) {\n      // Never written"
+  },
+  {
+    "name": "app: getConfig retried",
+    "file": "src/app.js",
+    "from": "      if (attempt !== this.configAttempt) return;\n      this.configTimer",
+    "to": "      return;\n      this.configTimer"
+  },
+  {
+    "name": "app: stop cancels the config retry",
+    "file": "src/app.js",
+    "from": "    this.cancelConfigRetry();\n    return this.serialize(() => this.doStop());",
+    "to": "    return this.serialize(() => this.doStop());"
+  },
+  {
+    "name": "app: floors reset by an accepted drop",
+    "file": "src/app.js",
+    "from": "      this.floors = new Map(PLAIN_COUNTERS.map((key) => [key, 0]));\n",
+    "to": "\n"
+  },
+  {
+    "name": "app: counters compared rounded",
+    "file": "src/app.js",
+    "from": "round(meter[COUNTER_FIELD[key]], 3) < (",
+    "to": "meter[COUNTER_FIELD[key]] < ("
+  },
+  {
+    "name": "app: mDNS service filtered",
+    "file": "src/app.js",
+    "from": "if (!name.includes(MDNS_SERVICE)) continue;",
+    "to": ""
+  },
+  {
+    "name": "app: mDNS address checked",
+    "file": "src/app.js",
+    "from": "if (!parsed.error) found.add",
+    "to": "found.add"
+  },
+  {
+    "name": "app: retry delay doubled",
+    "file": "src/app.js",
+    "from": "RETRY_MIN * 2 ** this.failures",
+    "to": "RETRY_MIN"
+  },
+  {
+    "name": "app: status page failing never blocks",
+    "file": "src/app.js",
+    "from": "    if (result.status === 'rejected') {\n      await this.failed(result.reason, mono);\n      return;\n    }\n    for (const page of pages) {\n      page.value?.();\n    }",
+    "to": "    if (result.status === 'rejected') {\n      await this.failed(result.reason, mono);\n      return;\n    }\n    for (const page of pages) {\n      page.value?.();\n    }\n    if (pages.some((p) => p.value && this.pages.status.failing)) return;"
+  },
+  {
+    "name": "guard: margin since the last value",
+    "file": "src/guard.js",
+    "from": "value >= previous.value && value - previous.value <= margin(previous.at, at)",
+    "to": "value >= previous.value"
+  },
+  {
+    "name": "guard: drop held",
+    "file": "src/guard.js",
+    "from": "return value >= previous.value &&",
+    "to": "return true &&"
+  },
+  {
+    "name": "store: unreadable is not empty",
+    "file": "src/store.js",
+    "from": "if (err?.code === 'ENOENT') return {};",
+    "to": "return {};"
+  }
+]

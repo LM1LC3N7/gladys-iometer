@@ -1,61 +1,90 @@
-# Demo Devices Template
+# IOmeter for Gladys Assistant
 
-This is the user documentation of the integration. Gladys re-hosts this file
-and shows a permanent **Documentation** link to it in the Configuration screen
-(in the user's language, with English as the fallback) — it is when
-configuring that the user needs it most. Keep the short onboarding hints in
-the `section` blocks of the manifest `config_schema`; put the long
-step-by-step (screenshots, troubleshooting…) here.
+Unofficial integration, not affiliated with IOmeter GmbH. **Never tested with a
+real IOmeter**: built from the client library published by the maker. Please
+report what you see.
 
-## What you get
+## What it does
 
-Six demo devices show up after installation: a weather station (real data
-from Open-Meteo), a switch, a dimmable light, a smart plug with power
-metering, a motion sensor and a camera.
+IOmeter is a reader clipped on the optical port of a German smart meter
+(moderne Messeinrichtung or smart meter gateway), with a Wi-Fi bridge on your
+network. This integration reads the **local API of the bridge**, without any
+cloud nor account, and is **read only**: it never writes anything to the
+bridge nor to the meter.
 
-## Configuration
+| Value                                                                                    | In Gladys                                   | When         |
+| ---------------------------------------------------------------------------------------- | ------------------------------------------- | ------------ |
+| Power taken from the grid (W)                                                            | energy sensor, power                        | every 10 s   |
+| Net power, negative when injecting (W)                                                   | sensor                                      | every 10 s   |
+| Consumption index 1.8.0 (kWh)                                                            | energy sensor, index: the energy monitoring | every minute |
+| Tariff 1 and 2 indexes, injection index 2.8.0 (kWh)                                      | sensors                                     | every minute |
+| Power of each phase (W)                                                                  | sensors                                     | every 10 s   |
+| Reader battery (%), bridge and reader signals (dBm), reader connected and attached (1/0) | sensors                                     | every minute |
 
-1. Open the **Configuration** tab of the integration.
-2. Set the **latitude** and **longitude** the demo weather station should
-   observe (they default to Paris), and pick your temperature unit.
-   The **refresh interval** sets how often the weather station and the
-   plug's power are read: every 5 minutes by default, every minute at most.
-3. Save: the devices appear in the **Discovery** tab, ready to be added.
+Only the values your meter gives are created. Gladys derives the consumption
+and its cost from the consumption index by itself. The injection is never in
+it: it is a plain sensor. This is not the Discovergy (inexogy) integration,
+which reads the cloud of the metering operator.
 
-The **Prefer the local connection** toggle drives the demo plug: it reports
-the channel it actually uses as a badge (local or cloud), with an orange dot
-when it runs degraded (local refused, cloud fallback).
+## Setup
 
-## Actions
+1. Set up your IOmeter with its app, so that the bridge is on your Wi-Fi.
+2. Find the IP address of the bridge in your router or in the IOmeter app. You
+   can also leave the address empty and open the **Discover** tab: the bridges
+   announced on your network are listed in the status of the integration
+   (nothing is read until you enter an address).
+3. Enter the address in the configuration of the integration and save. Click
+   **Test the connection**: it reads the net power and the consumption index
+   once.
+4. In the **Discover** tab, create the IOmeter device.
 
-- **Test the weather provider** — performs a live request to Open-Meteo and
-  shows the current temperature and humidity under the button.
-- **Identify a device** — pick one of your devices in the list and it will
-  signal itself (the demo light "blinks" in the logs).
+Give the bridge a fixed address in your router. If it changes, enter the new
+one: the device and its history are kept.
 
-## Scenes
+## The consumption index guard
 
-The integration adds its own cards to the scene editor (Gladys 5.1 or
-later), under the **Integrations** category:
+The consumption index is billed by Gladys: a wrong jump would count kWh that
+were never used. So the integration publishes a new index only when it is
+plausible after the last one (not lower, not more than 100 kW on average since
+then). A jump or a drop is **held back**: the last accepted value is sent
+again, the status of the integration says what is held, and it stays held
+across restarts. Nothing confirms it by time nor by repetition.
 
-- **Motion detected** (trigger) — starts the scene when a demo motion sensor
-  sees something move. Optionally pick the sensor and what moved (person,
-  animal); left empty, any detection matches. The following actions can
-  read what moved with `{{triggerEvent.data.target}}`.
-- **Identify a device** (action) — makes the chosen device signal itself.
-  It returns whether the device could signal itself, so the following
-  actions can depend on it.
+If the value is right (a new meter, a reset, a long outage), click **Accept the
+held index** twice in the configuration: the first click lists the value and
+accepts nothing, the second one, a few seconds later and within 5 minutes,
+takes exactly that value. A jump is then counted at once as consumption; a
+drop bills nothing and the consumption goes on from there. Saving the
+configuration accepts nothing.
 
-## Dashboard
+The tariff and injection indexes are never published lower than before nor at
+0; accepting a drop of the consumption index (a new meter) lets them start
+again from the new values.
 
-Add the **Demo status** widget to a dashboard: it shows the live
-temperature of the weather station and the power of the office plug, the
-connection the plug currently uses (orange when degraded) and the observed
-location. Its **Identify the light** button makes the demo light signal
-itself.
+## What the status says
 
-## Troubleshooting
+- **Connected**, with notes: the status page not answering (the reading goes
+  on), no new reading of the meter for 5 minutes (the power is then no longer
+  sent: reader off the meter, battery empty or out of radio range), no index
+  register, a counter read lower than before, an index held back.
+- **Could not be read**: no answer, unreachable, HTTP error, an answer too
+  large (over 64 KiB) or that is not an IOmeter one, no reading yet. The
+  integration tries again after 10 s, then waits twice as long each time, up
+  to 5 minutes.
+- When Gladys does not give the configuration at a connection, the
+  integration tries again the same way, without end.
 
-The integration logs everything it does: check the integration logs from the
-Gladys UI (or `docker logs` on the host) with `LOG_LEVEL=debug` for the full
-detail.
+## Privacy
+
+The meter number, the installation id and the id of the bridge are ignored by
+the integration (never taken out of the answers): they reach no log, status
+nor file. /data holds only the
+reference of the consumption index and the value held back.
+
+## Limits
+
+- Never tested with a real IOmeter: the pages, units and OBIS codes are those
+  of the maker's library (version 1.0.3).
+- The bridge also offers a stream (Server-Sent Events); this integration polls
+  every 10 seconds instead.
+- One bridge per integration.

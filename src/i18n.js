@@ -1,0 +1,178 @@
+// -----------------------------------------------------------------------------
+// Runtime texts shown in Gladys. Every text is a { en, fr } object. They
+// never quote a text of the device: only our own words and error codes.
+// -----------------------------------------------------------------------------
+
+const seconds = (ms) => Math.max(1, Math.round(ms / 1000));
+const minutes = (ms) => Math.max(1, Math.round(ms / 60_000));
+const delay = (ms) =>
+  ms >= 60_000
+    ? { en: `${minutes(ms)} min`, fr: `${minutes(ms)} min` }
+    : { en: `${seconds(ms)} s`, fr: `${seconds(ms)} s` };
+
+/** Our words for an error code of src/iometer/client.js. */
+const REASON = {
+  timeout: { en: 'no answer', fr: 'pas de réponse' },
+  unreachable: { en: 'unreachable', fr: 'injoignable' },
+  http: { en: 'HTTP error', fr: 'erreur HTTP' },
+  too_large: { en: 'answer too large', fr: 'réponse trop grande' },
+  not_data: { en: 'answer that is not data', fr: 'réponse qui n’est pas une donnée' },
+  unknown_answer: {
+    en: 'not an IOmeter bridge answer',
+    fr: 'réponse qui n’est pas celle d’un pont IOmeter',
+  },
+  no_data: {
+    en: 'no reading of the meter yet',
+    fr: 'aucun relevé du compteur pour l’instant',
+  },
+};
+
+export function reason(err) {
+  const text = REASON[err?.code] ?? { en: 'unexpected error', fr: 'erreur inattendue' };
+  const status = err?.code === 'http' && err.status ? ` ${err.status}` : '';
+  return { en: `${text.en}${status}`, fr: `${text.fr}${status}` };
+}
+
+/** The names of the secondary pages, for the status. */
+const PAGE = {
+  status: { en: 'status (signal, battery)', fr: 'état (signal, pile)' },
+};
+
+export const T = {
+  noAddress: {
+    en: 'Enter the address of your IOmeter bridge (its IP address on your network, e.g. 192.168.1.40).',
+    fr: 'Saisissez l’adresse de votre pont IOmeter (son adresse IP sur votre réseau, ex. 192.168.1.40).',
+  },
+  badAddress: {
+    en: 'The IOmeter bridge address is not valid: enter an IP address or a host name, with an optional port (e.g. 192.168.1.40).',
+    fr: 'L’adresse du pont IOmeter n’est pas valide : saisissez une adresse IP ou un nom d’hôte, avec un port éventuel (ex. 192.168.1.40).',
+  },
+  /** `notes`: { en, fr } texts added after the failure (an index held back). */
+  unreachable: (address, err, wait, notes = []) => ({
+    en: [
+      `The IOmeter bridge at ${address} could not be read (${reason(err).en}): new try in ${delay(wait).en}.`,
+      ...notes.map((n) => n.en),
+    ].join(' '),
+    fr: [
+      `Le pont IOmeter à l’adresse ${address} n’a pas pu être lu (${reason(err).fr}) : nouvel essai dans ${delay(wait).fr}.`,
+      ...notes.map((n) => n.fr),
+    ].join(' '),
+  }),
+  configUnavailable: (wait) => ({
+    en: `Gladys did not give the configuration of the integration: new try in ${delay(wait).en}.`,
+    fr: `Gladys n’a pas donné la configuration de l’intégration : nouvel essai dans ${delay(wait).fr}.`,
+  }),
+  noDevice: {
+    en: 'IOmeter bridge found: create its device from the "Discover" tab to receive its values.',
+    fr: 'Pont IOmeter trouvé : créez son appareil depuis l’onglet « Découverte » pour recevoir ses valeurs.',
+  },
+  /** `notes`: { en, fr } texts added after the connection message. */
+  ok: (address, notes = []) => ({
+    en: [`Connected to the IOmeter bridge (${address}).`, ...notes.map((n) => n.en)].join(' '),
+    fr: [`Connecté au pont IOmeter (${address}).`, ...notes.map((n) => n.fr)].join(' '),
+  }),
+  notes: {
+    pages: (pages) => ({
+      en: `Some pages do not answer (${pages.map((p) => PAGE[p].en).join(', ')}): the other values go on.`,
+      fr: `Certaines pages ne répondent pas (${pages.map((p) => PAGE[p].fr).join(', ')}) : les autres valeurs continuent.`,
+    }),
+    stale: {
+      en: 'The bridge gives no new reading of the meter (reader off the meter, battery empty, out of radio range?): the power is no longer sent.',
+      fr: 'Le pont ne donne plus de nouveau relevé du compteur (lecteur décroché, pile vide, hors de portée radio ?) : la puissance n’est plus envoyée.',
+    },
+    noIndex: {
+      en: 'The meter gives no index right now: the consumption index waits for it.',
+      fr: 'Le compteur ne donne pas d’index en ce moment : l’index de consommation l’attend.',
+    },
+    counterDown: {
+      en: 'A tariff or injection index read lower than before: not sent (a counter never goes down). Accepting a held consumption index drop (a new meter) resets them.',
+      fr: 'Un index de tarif ou d’injection a été lu plus bas qu’avant : non envoyé (un compteur ne baisse jamais). Accepter une baisse retenue de l’index de consommation (nouveau compteur) les remet à zéro.',
+    },
+    held: ({ direction, from, to }) => {
+      if (direction === 'down') {
+        return {
+          en: `The consumption index dropped from ${from} to ${to} kWh: held back, the last accepted value is sent again. If the meter was really replaced or reset, click "Accept the held index" twice in the configuration of the integration: nothing is billed for the drop, the consumption goes on from there. Saving the configuration accepts nothing.`,
+          fr: `L’index de consommation a baissé de ${from} à ${to} kWh : retenu, la dernière valeur acceptée est renvoyée. Si le compteur a vraiment été remplacé ou remis à zéro, cliquez deux fois sur « Accepter l’index retenu » dans la configuration de l’intégration : rien n’est facturé pour la baisse, la consommation repart de là. Enregistrer la configuration n’accepte rien.`,
+        };
+      }
+      const kwh = Math.round((to - from) * 1000) / 1000;
+      return {
+        en: `The consumption index jumped from ${from} to ${to} kWh: held back, not sent to the energy monitoring. If you click "Accept the held index" twice in the configuration of the integration, ${kwh} kWh will be counted at once as consumption; accept only if this energy was really consumed. Saving the configuration accepts nothing.`,
+        fr: `L’index de consommation a sauté de ${from} à ${to} kWh : retenu, non envoyé au suivi énergétique. Si vous cliquez deux fois sur « Accepter l’index retenu » dans la configuration de l’intégration, ${kwh} kWh seront comptés d’un coup comme consommation ; n’acceptez que si cette énergie a vraiment été consommée. Enregistrer la configuration n’accepte rien.`,
+      };
+    },
+  },
+  accept: {
+    nothing: {
+      en: 'No consumption index is held back: nothing to accept.',
+      fr: 'Aucun index de consommation n’est retenu : rien à accepter.',
+    },
+    /** The first click: what a second click accepts, nothing accepted yet. */
+    confirm: ({ direction, from, to }, within) => {
+      const kwh = Math.round((to - from) * 1000) / 1000;
+      const what =
+        direction === 'down'
+          ? {
+              en: `the consumption index from ${from} down to ${to} kWh (a reset or a new meter: nothing is billed for the drop, the consumption goes on from there)`,
+              fr: `l’index de consommation de ${from} à ${to} kWh (remise à zéro ou nouveau compteur : rien n’est facturé pour la baisse, la consommation repart de là)`,
+            }
+          : {
+              en: `the consumption index from ${from} to ${to} kWh (${kwh} kWh counted at once as consumption)`,
+              fr: `l’index de consommation de ${from} à ${to} kWh (${kwh} kWh comptés d’un coup comme consommation)`,
+            };
+      return {
+        en: `Nothing accepted yet. A second click accepts exactly ${what.en}. Click "Accept the held index" again, after a few seconds and within ${delay(within).en}; accept only if this is real.`,
+        fr: `Rien n’est encore accepté. Un second clic accepte exactement ${what.fr}. Cliquez de nouveau sur « Accepter l’index retenu », après quelques secondes et dans les ${delay(within).fr} ; n’acceptez que si c’est réel.`,
+      };
+    },
+    /** The second click after the device was created again (a new guard). */
+    recreated: {
+      en: 'Not accepted: the device was created again since the first click. Click again to list the value held now.',
+      fr: 'Non accepté : l’appareil a été recréé depuis le premier clic. Cliquez de nouveau pour lister la valeur retenue maintenant.',
+    },
+    /** The second click found another value held than the one listed. */
+    changed: ({ to }) => ({
+      en: `Not accepted: the held index changed since the first click (now ${to} kWh). Click again to list it.`,
+      fr: `Non accepté : l’index retenu a changé depuis le premier clic (maintenant ${to} kWh). Cliquez de nouveau pour le lister.`,
+    }),
+    up: ({ from, to }) => {
+      const kwh = Math.round((to - from) * 1000) / 1000;
+      return {
+        en: `Accepted: the index ${to} kWh will be sent at the next read, and ${kwh} kWh (plus what the home uses meanwhile) will be counted at once as consumption. A different value stays held.`,
+        fr: `Accepté : l’index ${to} kWh sera envoyé à la prochaine lecture, et ${kwh} kWh (plus ce que le foyer consomme d’ici là) seront comptés d’un coup comme consommation. Une autre valeur reste retenue.`,
+      };
+    },
+    down: ({ from, to }) => ({
+      en: `Accepted: the index goes from ${from} down to ${to} kWh at the next read; 0 kWh is counted for the drop, the consumption goes on from there. A different value stays held.`,
+      fr: `Accepté : l’index passe de ${from} à ${to} kWh à la prochaine lecture ; 0 kWh est compté pour la baisse, la consommation repart de là. Une autre valeur reste retenue.`,
+    }),
+  },
+  /** The Discover tab without an address: what the network discovery found. */
+  found: (addresses) =>
+    addresses.length === 0
+      ? {
+          en: 'No IOmeter bridge found on the network: enter the address of yours (its IP address, shown by your router) in the configuration.',
+          fr: 'Aucun pont IOmeter trouvé sur le réseau : saisissez l’adresse du vôtre (son adresse IP, visible dans votre box) dans la configuration.',
+        }
+      : {
+          en: `IOmeter bridge found on the network at ${addresses.join(', ')}: enter this address in the configuration and save.`,
+          fr: `Pont IOmeter trouvé sur le réseau à l’adresse ${addresses.join(', ')} : saisissez cette adresse dans la configuration et enregistrez.`,
+        },
+  test: {
+    ok: (meter) => {
+      const power = meter.power === undefined ? '?' : `${meter.power} W`;
+      const index =
+        meter.consumption === undefined
+          ? '?'
+          : `${Math.round(meter.consumption * 1000) / 1000} kWh`;
+      return {
+        en: `IOmeter bridge read: net power ${power}, consumption index ${index}.`,
+        fr: `Pont IOmeter lu : puissance nette ${power}, index de consommation ${index}.`,
+      };
+    },
+    slow: {
+      en: 'The IOmeter bridge is slow to answer: look at the integration status in a minute.',
+      fr: 'Le pont IOmeter tarde à répondre : regardez l’état de l’intégration dans une minute.',
+    },
+  },
+};

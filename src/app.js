@@ -1,0 +1,844 @@
+// -----------------------------------------------------------------------------
+// The integration itself: the IOmeter bridge read every 10 s (the indexes
+// published once a minute), its device, the plausibility of the billed index,
+// the status page (signal, battery) that never holds back the reading, the
+// retries of an unreachable bridge, the test button and the network discovery
+// of the Discover tab. index.js only wires the SDK handlers to it.
+//
+// After gladys-p1-monitor (same guard, same clocks, same retries).
+//
+// The created devices are read from `gladys.devices`, which the SDK keeps up
+// to date (connection, creation, update, deletion): never a copy of our own.
+//
+// Clocks: `monotonic` paces the reads, retries and intervals, so that a wall
+// clock set back never stops them. The index guard runs on the SESSION clock:
+// the wall clock read once at the start of the process plus the monotonic
+// time since (`sessionNow`), so that NTP moving the wall clock by hours during
+// a life never widens nor narrows its margin. The wall clock itself only
+// dates what /data keeps for the next process: /data holds wall dates, turned
+// into session dates when loaded, bounded by the session clock (a date "in
+// the future" is now). /data is written again when the wall offset moves, and
+// an unchanged reference keeps the wall date /data gave it. There is no wait
+// after a restart: the bridge is a local device, read every 10 s.
+// -----------------------------------------------------------------------------
+
+import { createLogger } from '@gladysassistant/integration-sdk';
+import { normalizeConfig } from './config.js';
+import {
+  ACCEPT_CONFIRM_AFTER,
+  ACCEPT_CONFIRM_WITHIN,
+  INDEX_INTERVAL,
+  NO_STATUS_RETRY,
+  POWER_INTERVAL,
+  READING_STALE_AFTER,
+  RETRY_MAX,
+  RETRY_MIN,
+  SECONDARY_RETRY,
+  STATE_HEARTBEAT,
+  STATUS_INTERVAL,
+  TEST_ANSWER_WITHIN,
+} from './constants.js';
+import {
+  FEATURE,
+  PLAIN_COUNTERS,
+  buildDevice,
+  capabilitiesOfDevice,
+  ids,
+  indexStates,
+  liveStates,
+  round,
+  statusStates,
+} from './devices.js';
+import { IndexGuard, margin } from './guard.js';
+import { parseAddress } from './config.js';
+import { createFileStore } from './store.js';
+import { T } from './i18n.js';
+import { IOmeterClient } from './iometer/client.js';
+import { bringsNew, capabilitiesOf, mergeCapabilities } from './iometer/model.js';
+
+const defaultTimers = { setTimeout, clearTimeout, setInterval, clearInterval };
+
+/** The secondary pages; `every`: 0 for each read. */
+const PAGES = [
+  {
+    name: 'status',
+    read: (client) => client.readStatus(),
+    every: STATUS_INTERVAL,
+    keepOnError: false,
+  },
+];
+
+/** The mDNS service of the bridge (manifest `network_discovery`). */
+export const MDNS_SERVICE = '_iometer._tcp';
+/** Bridges listed in the status after a network discovery, at most. */
+const MAX_FOUND = 5;
+
+const freshPages = () =>
+  Object.fromEntries(
+    PAGES.map((p) => [p.name, { nextAt: 0, failing: false, data: undefined, fresh: false }]),
+  );
+
+/** The reading field of each plain counter. */
+const COUNTER_FIELD = {
+  [FEATURE.CONSUMPTION_T1]: 'consumptionT1',
+  [FEATURE.CONSUMPTION_T2]: 'consumptionT2',
+  [FEATURE.PRODUCTION_INDEX]: 'production',
+};
+
+/** The index Gladys already holds for a feature of a created device, when it says so. */
+function lastValueOf(device, featureId) {
+  const feature = (device?.features ?? []).find((f) => f.external_id === featureId);
+  const value = Number(feature?.last_value);
+  const at = Date.parse(feature?.last_value_changed ?? '');
+  return feature?.last_value !== null &&
+    feature?.last_value !== undefined &&
+    Number.isFinite(value) &&
+    Number.isFinite(at)
+    ? { value, at }
+    : undefined;
+}
+
+export class IOmeterApp {
+  constructor({
+    gladys,
+    logger = createLogger({ name: 'iometer' }),
+    now = Date.now,
+    monotonic = () => performance.now(),
+    timers = defaultTimers,
+    clientFactory = (options) => new IOmeterClient(options),
+    store = createFileStore(),
+  }) {
+    this.gladys = gladys;
+    /** /data: the index reference and the value held, across restarts. */
+    this.store = store;
+    this.savedGuard = undefined;
+    this.logger = logger;
+    this.now = now;
+    this.monotonic = monotonic;
+    /** The session clock: wall at the start of the process + monotonic elapsed since. */
+    this.wallStart = now();
+    this.monoStart = monotonic();
+    this.timers = timers;
+    this.clientFactory = clientFactory;
+    this.config = normalizeConfig();
+    this.client = undefined;
+    /** What the bridge showed it gives, and what its created device carries: only grows. */
+    this.capabilities = undefined;
+    this.guard = undefined;
+    /**
+     * The plain counters (tariffs, injection): the lowest value each may take
+     * (the last one published, or Gladys' one), never published lower.
+     */
+    this.floors = undefined;
+    this.counterDown = false;
+    /** The last index check gave no index (the register missing). */
+    this.indexUndefined = false;
+    this.lastIndexAt = undefined;
+    this.pages = freshPages();
+    /** Freshness of the reading: the time of the meter, and when (monotonic) it last changed. */
+    this.readingStamp = undefined;
+    this.freshAt = 0;
+    /** Retries: kept across reconnections to Gladys, reset by a save of the form. */
+    this.failures = 0;
+    this.nextTryAt = 0;
+    this.lastError = undefined;
+    this.timer = undefined;
+    this.busy = undefined;
+    this.busyGeneration = undefined;
+    this.firstRun = Promise.resolve();
+    this.lastStatus = undefined;
+    this.generation = 0;
+    this.lifecycle = Promise.resolve();
+    /** The configuration read at a connection: its attempt, and the timer of its retry. */
+    this.configAttempt = 0;
+    this.configTimer = undefined;
+  }
+
+  /** The session clock (ms since epoch): never moved by a wall clock set by NTP. */
+  sessionNow() {
+    return this.wallStart + (this.monotonic() - this.monoStart);
+  }
+
+  // --- Lifecycle -------------------------------------------------------------
+
+  /**
+   * `fresh`: the user saved the form (not a reconnection): the retry delays
+   * end. It accepts nothing: a value held back is only taken by its own
+   * action (`acceptHeldIndex`).
+   */
+  start(raw = {}, { fresh = false } = {}) {
+    return this.serialize(() => this.doStart(raw, { fresh }));
+  }
+
+  stop() {
+    this.cancelConfigRetry();
+    return this.serialize(() => this.doStop());
+  }
+
+  /**
+   * The SDK is connected (the first time or again): the configuration is
+   * read, then the integration starts. A `getConfig()` failing is tried again
+   * after 10 s, doubled up to 5 minutes, without end, the status saying so.
+   */
+  connected() {
+    this.cancelConfigRetry();
+    const attempt = ++this.configAttempt;
+    return this.loadConfig(attempt, 0);
+  }
+
+  /** The configuration saved by the user: given, nothing to read. */
+  configUpdated(config) {
+    this.cancelConfigRetry();
+    this.configAttempt += 1;
+    return this.start(config, { fresh: true });
+  }
+
+  cancelConfigRetry() {
+    if (this.configTimer !== undefined) {
+      this.timers.clearTimeout(this.configTimer);
+      this.configTimer = undefined;
+    }
+  }
+
+  async loadConfig(attempt, failures) {
+    let config;
+    try {
+      config = await this.gladys.getConfig();
+    } catch (err) {
+      if (attempt !== this.configAttempt) return;
+      const wait = Math.min(RETRY_MIN * 2 ** failures, RETRY_MAX);
+      this.logger.warn(`Reading the configuration failed (${err?.status ?? err?.code ?? 'error'})`);
+      await this.setStatus(false, T.configUnavailable(wait));
+      if (attempt !== this.configAttempt) return;
+      this.configTimer = this.timers.setTimeout(() => {
+        this.configTimer = undefined;
+        // Kept for the tests (idle()): never awaited by the timer.
+        this.configRun = this.loadConfig(attempt, failures + 1).catch(() => {});
+      }, wait);
+      return;
+    }
+    if (attempt !== this.configAttempt) return;
+    await this.start(config);
+  }
+
+  /** Resolves once every queued start/stop and the first read after it are done (tests). */
+  async idle() {
+    await this.lifecycle;
+    await this.firstRun;
+  }
+
+  serialize(job) {
+    const run = this.lifecycle.then(job, job);
+    this.lifecycle = run.catch(() => {});
+    return run;
+  }
+
+  async doStart(raw, { fresh = false } = {}) {
+    await this.doStop();
+    const generation = ++this.generation;
+    const config = normalizeConfig(raw);
+    const changed = config.address !== this.config.address;
+    this.config = config;
+    if (changed || !this.client) {
+      // Another address: its reads start again. The device (one per
+      // integration) and its index guard stay: another meter is held there.
+      this.client = config.address ? this.clientFactory({ address: config.address }) : undefined;
+      this.pages = freshPages();
+      this.readingStamp = undefined;
+      this.failures = 0;
+      this.nextTryAt = 0;
+      this.lastError = undefined;
+    }
+    if (fresh) {
+      this.failures = 0;
+      this.nextTryAt = 0;
+      this.lastError = undefined;
+      for (const page of Object.values(this.pages)) {
+        page.nextAt = 0;
+      }
+    }
+    // The core keeps the connection status in memory: a restarted Gladys has
+    // lost it, so it is always sent again after a (re)connection.
+    this.lastStatus = undefined;
+    if (!config.address) {
+      await this.setStatus(false, config.invalidAddress ? T.badAddress : T.noAddress);
+      return;
+    }
+    // Every start (a reconnection to Gladys included) publishes everything
+    // again: a restarted Gladys has lost the discovered list. Unreachable now,
+    // the created device is still offered as it is.
+    this.gladys.forgetPublishedStates();
+    this.lastIndexAt = undefined;
+    this.capabilities = this.knownCapabilities();
+    await this.discover();
+    const mono = this.monotonic();
+    if (this.lastError && mono < this.nextTryAt) {
+      // Still waiting: the failure is shown again, with the time left.
+      await this.setStatus(false, this.failureMessage(this.lastError, this.nextTryAt - mono));
+    }
+    // Always armed, whatever the first read gives: never a dead integration.
+    this.timer = this.timers.setInterval(
+      () => this.run(generation, () => this.tick()),
+      POWER_INTERVAL,
+    );
+    // Not awaited: a start (a save of the form) answers at once.
+    this.firstRun = this.run(generation, () => this.tick());
+  }
+
+  async doStop() {
+    this.generation += 1;
+    if (this.timer !== undefined) {
+      this.timers.clearInterval(this.timer);
+      this.timer = undefined;
+    }
+  }
+
+  /** Run a job of a generation: nothing after a restart. */
+  async run(generation, job) {
+    if (generation !== this.generation) {
+      return;
+    }
+    try {
+      await job();
+    } catch (err) {
+      this.logger.error(`IOmeter bridge: unexpected error (${err?.name ?? 'Error'})`);
+    }
+  }
+
+  async setStatus(connected, message) {
+    const key = JSON.stringify([connected, message ?? null]);
+    if (key === this.lastStatus) {
+      return;
+    }
+    this.lastStatus = key;
+    await this.gladys
+      .setConnectionStatus(connected, message)
+      .catch((err) => this.logger.warn(`setConnectionStatus failed: ${err.message}`));
+  }
+
+  // --- Devices ---------------------------------------------------------------------
+
+  externalIds() {
+    return ids(this.gladys);
+  }
+
+  /** The created Gladys device of the IOmeter bridge, undefined until the user creates it. */
+  createdDevice() {
+    const id = this.externalIds().device;
+    return (this.gladys.devices ?? []).find((d) => d.external_id === id);
+  }
+
+  /** The capabilities known so far, with the features of the created device (never fewer). */
+  knownCapabilities(seen) {
+    return mergeCapabilities(
+      mergeCapabilities(this.capabilities, capabilitiesOfDevice(this.createdDevice())),
+      seen,
+    );
+  }
+
+  async discover() {
+    if (!this.capabilities || !this.config.address) {
+      return;
+    }
+    await this.gladys
+      .publishDiscoveredDevices([buildDevice(this.gladys, this.capabilities, this.config.address)])
+      .catch((err) =>
+        this.logger.warn(`Publishing the IOmeter bridge device failed: ${err.message}`),
+      );
+  }
+
+  /**
+   * The Discover tab asks: the known device, or a read now to find it.
+   * Without an address, the bridges announced on the network (mDNS, through
+   * the core) are listed in the status for the user to enter one: never
+   * taken by themselves.
+   */
+  async scan() {
+    if (this.capabilities) {
+      await this.discover();
+    } else if (this.client) {
+      this.nextTryAt = 0;
+      await this.run(this.generation, () => this.tick());
+    } else if (!this.config.invalidAddress) {
+      const generation = this.generation;
+      const found = await this.findBridges();
+      if (found !== undefined && generation === this.generation && !this.client) {
+        await this.setStatus(false, T.found(found));
+      }
+    }
+  }
+
+  /** The addresses of the bridges announced in mDNS; undefined when the core cannot scan. */
+  async findBridges() {
+    let services;
+    try {
+      services = await this.gladys.scanNetwork('mdns', { timeoutSeconds: 5 });
+    } catch (err) {
+      this.logger.warn(
+        `IOmeter network discovery unavailable (${err?.status ?? err?.code ?? 'error'})`,
+      );
+      return undefined;
+    }
+    const found = new Set();
+    for (const service of Array.isArray(services) ? services : []) {
+      if (found.size >= MAX_FOUND) break;
+      const name = String(service?.name ?? '').toLowerCase();
+      if (!name.includes(MDNS_SERVICE)) continue;
+      const ip = (Array.isArray(service.addresses) ? service.addresses : []).find(
+        (a) => typeof a === 'string' && /^\d{1,3}(\.\d{1,3}){3}$/.test(a),
+      );
+      const port = Number.isInteger(service.port) ? service.port : 80;
+      const parsed = ip ? parseAddress(`${ip}:${port}`) : { error: 'none' };
+      if (!parsed.error) found.add(parsed.address);
+    }
+    return [...found];
+  }
+
+  async onDeviceCreated(device) {
+    if (this.config.address && device?.external_id === this.externalIds().device) {
+      // A new device: no reference of the index yet (nor a value held in
+      // /data for a deleted device of the same id), its values right away.
+      const indexId = this.externalIds().feature(FEATURE.CONSUMPTION_INDEX);
+      const kept = this.loadStore();
+      if (kept && indexId in kept) {
+        delete kept[indexId];
+        await this.store
+          .save(kept)
+          .catch((err) =>
+            this.logger.warn(
+              `Clearing the IOmeter bridge index state failed (${err?.code ?? 'error'})`,
+            ),
+          );
+      }
+      // After the save: a read finished meanwhile must not leave its guard.
+      this.guard = undefined;
+      this.savedGuard = undefined;
+      this.floors = undefined;
+      this.counterDown = false;
+      this.lastIndexAt = undefined;
+      await this.run(this.generation, () => this.tick());
+    }
+  }
+
+  async onDeviceUpdated(device) {
+    if (this.config.address && device?.external_id === this.externalIds().device) {
+      // New features (Update in Discovery): their values right away.
+      this.lastIndexAt = undefined;
+      await this.run(this.generation, () => this.tick());
+    }
+  }
+
+  // --- Reads -------------------------------------------------------------------------
+
+  /**
+   * One read; a read still running (a slow device) is never doubled. A read
+   * of a previous start (another address) is let finish (it gives up), then
+   * this one runs.
+   */
+  tick() {
+    if (this.busy) {
+      if (this.busyGeneration === this.generation) {
+        return this.busy;
+      }
+      return this.busy.then(() => this.tick());
+    }
+    this.busyGeneration = this.generation;
+    this.busy = this.doTick().finally(() => {
+      this.busy = undefined;
+    });
+    return this.busy;
+  }
+
+  async doTick() {
+    const generation = this.generation;
+    const client = this.client;
+    const mono = this.monotonic();
+    if (!client || mono < this.nextTryAt) {
+      return;
+    }
+    /** A start (another address, a stop) during an await: this read gives up. */
+    const gone = () => client !== this.client || generation !== this.generation;
+    // The status page is read along with the reading: it never delays it.
+    // Its outcome counts only when the reading answered: with the bridge
+    // down, the page failing says nothing of its own, it is read again with
+    // the reading at the next try.
+    const [result, ...pages] = await Promise.allSettled([
+      client.readReading(),
+      ...PAGES.map((page) => this.readPage(client, page, mono)),
+    ]);
+    if (gone()) {
+      return;
+    }
+    if (result.status === 'rejected') {
+      await this.failed(result.reason, mono);
+      return;
+    }
+    for (const page of pages) {
+      page.value?.();
+    }
+    const meter = result.value;
+    this.failures = 0;
+    this.nextTryAt = 0;
+    this.lastError = undefined;
+    this.followFreshness(meter, mono);
+    const target = this.knownCapabilities(
+      capabilitiesOf({ reading: meter, status: this.pages.status.data }),
+    );
+    if (!this.capabilities || bringsNew(this.capabilities, target)) {
+      this.capabilities = target;
+      await this.discover();
+      if (gone()) return;
+    }
+    await this.publish(meter, mono);
+    if (gone()) return;
+    await this.setStatus(true, this.createdDevice() ? this.okMessage(meter, mono) : T.noDevice);
+  }
+
+  /**
+   * A secondary page: its failure is logged once, shown in the status and
+   * tried again after SECONDARY_RETRY; it never holds back the main values.
+   * Returns what to record (applied by doTick only when the meter answered),
+   * or undefined when the page is not due.
+   */
+  async readPage(client, { name, read, every, keepOnError }, mono) {
+    const page = this.pages[name];
+    if (mono < page.nextAt) {
+      return undefined;
+    }
+    let data;
+    try {
+      data = await read(client);
+    } catch (err) {
+      return () => {
+        page.nextAt = mono + SECONDARY_RETRY;
+        if (!keepOnError) {
+          // Live values: never shown stale.
+          page.data = undefined;
+        }
+        page.fresh = false;
+        if (!page.failing) {
+          page.failing = true;
+          this.logger.warn(`IOmeter bridge ${name} page unavailable (${err?.code ?? 'error'})`);
+        }
+      };
+    }
+    return () => {
+      page.data = data;
+      // Published once, at the read that brought it: never again as new.
+      page.fresh = true;
+      page.nextAt = data?.none ? mono + NO_STATUS_RETRY : every ? mono + every : 0;
+      if (page.failing) {
+        page.failing = false;
+        this.logger.info(`IOmeter bridge ${name} page back`);
+      }
+    };
+  }
+  /** The reading is stale when its time has not changed for a while (monotonic). */
+  followFreshness(meter, mono) {
+    if (meter.time === undefined || meter.time !== this.readingStamp) {
+      this.readingStamp = meter.time;
+      this.freshAt = mono;
+    }
+  }
+
+  isStale(mono) {
+    return this.readingStamp !== undefined && mono - this.freshAt >= READING_STALE_AFTER;
+  }
+
+  okMessage(meter, mono) {
+    const notes = [];
+    const failing = PAGES.map((p) => p.name).filter((name) => this.pages[name].failing);
+    if (failing.length > 0) notes.push(T.notes.pages(failing));
+    if (this.isStale(mono)) notes.push(T.notes.stale);
+    if (this.capabilities?.consumption && this.indexUndefined) {
+      notes.push(T.notes.noIndex);
+    }
+    if (this.counterDown) notes.push(T.notes.counterDown);
+    if (this.guard?.held) notes.push(T.notes.held(this.guard.held));
+    return T.ok(this.config.address, notes);
+  }
+
+  async failed(err, mono) {
+    const code = err?.code ?? 'error';
+    const wait = Math.min(RETRY_MIN * 2 ** this.failures, RETRY_MAX);
+    this.failures += 1;
+    this.nextTryAt = mono + wait;
+    this.lastError = err;
+    // Our own words only (IOmeterError): never a text of the device.
+    this.logger.warn(`IOmeter bridge read failed: ${code}${err?.status ? ` ${err.status}` : ''}`);
+    await this.setStatus(false, this.failureMessage(err, wait));
+  }
+
+  /** The failure, with the index held back if any (the user must see it while waiting). */
+  failureMessage(err, wait) {
+    const held = this.currentGuard()?.held;
+    const notes = held ? [T.notes.held(held)] : [];
+    return T.unreachable(this.config.address, err, wait, notes);
+  }
+
+  /** The guard of the created device, built from Gladys and /data when needed. */
+  currentGuard() {
+    const created = this.createdDevice();
+    if (!created) {
+      return undefined;
+    }
+    return this.guardOf(created, this.externalIds().feature(FEATURE.CONSUMPTION_INDEX));
+  }
+
+  /**
+   * The guard of the created device, from Gladys and /data, on the session
+   * clock. /data and Gladys hold wall dates: turned into session dates with
+   * the offset of now, then bounded by the session clock.
+   */
+  guardOf(created, indexId) {
+    if (!this.guard) {
+      // An unreadable /data: the guard starts from Gladys alone (it holds a
+      // jump against that value just as well); nothing is written over it.
+      const saved = this.loadStore()?.[indexId];
+      const sessionNow = this.sessionNow();
+      const offset = this.now() - sessionNow;
+      const toSession = (ref) =>
+        ref && Number.isFinite(ref.at)
+          ? { ...ref, at: Math.min(ref.at - offset, sessionNow) }
+          : ref;
+      const kept =
+        saved && typeof saved === 'object'
+          ? { ...saved, last: toSession(saved.last), held: toSession(saved.held) }
+          : saved;
+      this.guard = new IndexGuard(toSession(lastValueOf(created, indexId)), kept, sessionNow);
+      this.floors = new Map(
+        PLAIN_COUNTERS.map((key) => [
+          key,
+          lastValueOf(created, this.externalIds().feature(key))?.value ?? 0,
+        ]),
+      );
+      // The reference taken from /data keeps its wall date there while it is
+      // unchanged: never the bounded date of a life whose clock was wrong.
+      const last = this.guard.last;
+      this.keptWall =
+        last && kept?.last && last.value === kept.last.value && last.at === kept.last.at
+          ? { value: last.value, at: last.at, wall: saved.last.at }
+          : undefined;
+    }
+    return this.guard;
+  }
+
+  /** The states of a read: the live values every time, the indexes once a minute. */
+  async publish(meter, mono) {
+    // The status is published once, at the read that brought it: never later as new.
+    const status = this.pages.status;
+    const statusFresh = status.fresh;
+    status.fresh = false;
+    const created = this.createdDevice();
+    if (!created) {
+      return;
+    }
+    const external = this.externalIds();
+    // A frozen reading (reader off the meter): its power would look live, it is not sent.
+    const states = this.isStale(mono) ? [] : liveStates(external, meter);
+    if (statusFresh) {
+      states.push(...statusStates(external, status.data));
+    }
+    if (this.lastIndexAt !== undefined && mono < this.lastIndexAt) {
+      // A clock set back (a monotonic clock never is): paced again from now.
+      this.lastIndexAt = undefined;
+    }
+    if (this.lastIndexAt === undefined || mono - this.lastIndexAt >= INDEX_INTERVAL) {
+      this.lastIndexAt = mono;
+      const indexId = external.feature(FEATURE.CONSUMPTION_INDEX);
+      const guard = this.guardOf(created, indexId);
+      // The index as Gladys will hold it (3 decimals).
+      const total = meter.consumption === undefined ? undefined : round(meter.consumption, 3);
+      this.indexUndefined = total === undefined;
+      const plausible = total !== undefined && guard.accept(total, this.sessionNow());
+      await this.saveGuard(indexId);
+      if (total !== undefined && !plausible) {
+        this.logger.warn(
+          `IOmeter bridge consumption index ${guard.held?.direction === 'down' ? 'drop' : 'jump'} held back: the "Accept the held index" button takes it`,
+        );
+      }
+      // While a value is held, the last accepted one is sent again (no delta
+      // for the core; the heartbeat keeps its date recent in Gladys).
+      const held = guard.held ? guard.last?.value : undefined;
+      const counters = indexStates(external, meter, plausible ? total : held, this.floors);
+      const down = PLAIN_COUNTERS.some(
+        (key) =>
+          typeof meter[COUNTER_FIELD[key]] === 'number' &&
+          meter[COUNTER_FIELD[key]] > 0 &&
+          // Compared as Gladys holds them (3 decimals).
+          round(meter[COUNTER_FIELD[key]], 3) < (this.floors.get(key) ?? 0),
+      );
+      if (down && !this.counterDown) {
+        this.logger.warn('IOmeter bridge: a plain counter read lower than before, not sent');
+      }
+      this.counterDown = down;
+      for (const s of counters) {
+        const key = s.device_feature_external_id.split(':').at(-1);
+        if (this.floors.has(key)) this.floors.set(key, Math.max(this.floors.get(key), s.state));
+      }
+      states.push(...counters);
+    }
+    // Only the features the created device has (they are fixed at its creation).
+    const features = created.features ? new Set(created.features.map((f) => f.external_id)) : null;
+    const allowed = features
+      ? states.filter((s) => features.has(s.device_feature_external_id))
+      : states;
+    if (allowed.length === 0) {
+      return;
+    }
+    await this.gladys
+      .publishChangedStates(allowed, { heartbeat: STATE_HEARTBEAT })
+      .catch((err) =>
+        this.logger.warn(`Publishing the IOmeter bridge values failed: ${err.message}`),
+      );
+  }
+
+  /** What /data holds, or undefined when it cannot be read (logged once). */
+  loadStore() {
+    try {
+      const data = this.store.load();
+      this.storeUnreadable = false;
+      return data;
+    } catch (err) {
+      if (!this.storeUnreadable) {
+        this.storeUnreadable = true;
+        this.logger.warn(`The IOmeter state in /data cannot be read (${err?.code ?? 'error'})`);
+      }
+      return undefined;
+    }
+  }
+
+  /**
+   * Keeps the guard in /data when its reference, its value held or the offset of the wall clock (to the minute) changed. Its session
+   * dates are written as wall dates (the offset of now): written again when
+   * NTP moves the wall clock, so that a life started before NTP does not
+   * leave its late dates in /data for the next life (review r1, I1). The
+   * reference read from /data and unchanged since keeps its wall date there.
+   */
+  async saveGuard(indexId) {
+    const state = this.guard.state();
+    const offset = this.now() - this.sessionNow();
+    const kept = this.keptWall;
+    const toWall = (ref) => {
+      if (!ref || !Number.isFinite(ref.at)) return ref;
+      if (ref === state.last && kept && ref.value === kept.value && ref.at === kept.at) {
+        return { ...ref, at: kept.wall };
+      }
+      return { ...ref, at: ref.at + offset };
+    };
+    const key = JSON.stringify([
+      state.last,
+      Math.round(offset / 60_000),
+      state.held && {
+        direction: state.held.direction,
+        from: state.held.from,
+        threshold: state.held.threshold,
+      },
+    ]);
+    if (key === this.savedGuard) {
+      return;
+    }
+    const current = this.loadStore();
+    if (!current) {
+      // Never written over a file that cannot be read: tried again at the next index.
+      return;
+    }
+    try {
+      await this.store.save({
+        ...current,
+        [indexId]: { ...state, last: toWall(state.last), held: toWall(state.held) },
+      });
+      this.savedGuard = key;
+    } catch (err) {
+      this.logger.warn(
+        `Saving the IOmeter bridge index state in /data failed (${err?.code ?? 'error'})`,
+      );
+    }
+  }
+
+  // --- Configuration screen button --------------------------------------------------
+
+  /**
+   * "Accept the held index", in two clicks: the first lists the value held
+   * (nothing is accepted), the second, from 3 s to 5 min later, accepts it
+   * only when the guard still holds that value, or, for a rise since, what
+   * the home may have drawn since the first click (src/guard.js margin).
+   * The acceptance itself stays bounded (src/guard.js). A save of the form
+   * never accepts.
+   */
+  async acceptHeldIndex() {
+    const guard = this.currentGuard();
+    const held = guard?.held;
+    const mono = this.monotonic();
+    const now = this.sessionNow();
+    const pending = this.pendingAccept;
+    this.pendingAccept = undefined;
+    const elapsed = pending ? mono - pending.at : undefined;
+    if (!pending || elapsed > ACCEPT_CONFIRM_WITHIN || elapsed < ACCEPT_CONFIRM_AFTER) {
+      if (!held) {
+        return T.accept.nothing;
+      }
+      const listed = { direction: held.direction, from: held.from, to: held.to };
+      this.pendingAccept = { at: mono, listedAt: now, guard, listed };
+      return T.accept.confirm(listed, ACCEPT_CONFIRM_WITHIN);
+    }
+    const { listed } = pending;
+    // A guard built again since (the device created again) never takes the
+    // first click of the old one.
+    const same =
+      held &&
+      pending.guard === guard &&
+      held.direction === listed.direction &&
+      held.from === listed.from &&
+      held.to >= listed.to &&
+      held.to - listed.to <= margin(pending.listedAt, now);
+    if (!same) {
+      if (!held) return T.accept.nothing;
+      return pending.guard === guard ? T.accept.changed(held) : T.accept.recreated;
+    }
+    const accepted = guard.acceptHeld();
+    this.logger.info(
+      `IOmeter bridge consumption index ${accepted.direction === 'down' ? 'drop' : 'jump'} accepted by the user`,
+    );
+    if (accepted.direction === 'down') {
+      // A new meter (or a reset): its plain counters start lower too.
+      this.floors = new Map(PLAIN_COUNTERS.map((key) => [key, 0]));
+      this.counterDown = false;
+    }
+    // Published at the next read, which comes now.
+    this.lastIndexAt = undefined;
+    this.firstRun = this.run(this.generation, () => this.tick());
+    return accepted.direction === 'down' ? T.accept.down(accepted) : T.accept.up(accepted);
+  }
+
+  /** The test button: read the meter once. */
+  async testConnection() {
+    if (!this.client) {
+      return this.config.invalidAddress ? T.badAddress : T.noAddress;
+    }
+    let timer;
+    const late = new Promise((resolve) => {
+      timer = this.timers.setTimeout(() => resolve(T.test.slow), TEST_ANSWER_WITHIN);
+    });
+    try {
+      return await Promise.race([this.check(), late]);
+    } finally {
+      this.timers.clearTimeout(timer);
+    }
+  }
+
+  async check() {
+    const client = this.client;
+    try {
+      const meter = await client.readReading();
+      if (client === this.client) {
+        // A good answer ends the retry delay: the next tick reads it.
+        this.failures = 0;
+        this.nextTryAt = 0;
+      }
+      return T.test.ok(meter);
+    } catch (err) {
+      return T.unreachable(this.config.address, err, RETRY_MIN);
+    }
+  }
+}

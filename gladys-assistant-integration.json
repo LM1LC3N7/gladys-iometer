@@ -1,177 +1,68 @@
 {
   "manifest_version": 1,
   "type": "device",
-  "name": "Demo Devices Template",
+  "name": "IOmeter",
   "description": {
-    "en": "Starter template showing sensors, a switch, a dimmable light and a smart plug.",
-    "fr": "Template de démarrage : capteurs, interrupteur, lampe variable et prise connectée."
+    "en": "Unofficial: IOmeter smart meter reader on your network: power, consumption and injection indexes.",
+    "fr": "Non officiel : lecteur de compteur IOmeter en local : puissance, index consommé et injecté."
   },
-  "version": "1.0.0",
-  "docker_image": "ghcr.io/gladysassistant/integration-template-js:1.0.0",
+  "version": "0.1.0",
+  "docker_image": "ghcr.io/lm1lc3n7/gladys-iometer:0.1.0",
   "gladys_version": ">=5.1.0",
-  "cover_image": "https://raw.githubusercontent.com/GladysAssistant/integration-template-js/master/cover.png",
-  "categories": ["lighting", "security", "environment"],
-  "transports": ["local", "cloud"],
+  "cover_image": "https://raw.githubusercontent.com/LM1LC3N7/gladys-iometer/main/cover.png",
+  "categories": ["energy"],
+  "transports": ["local"],
+  "network_discovery": [{ "type": "mdns", "service": "_iometer._tcp" }],
   "config_schema": [
     {
       "key": "intro",
       "type": "section",
-      "label": { "en": "Getting started", "fr": "Pour commencer" },
+      "label": { "en": "IOmeter", "fr": "IOmeter" },
       "description": {
-        "en": "The demo weather station reads real data from the free Open-Meteo API: pick the coordinates to observe. No account, no API key.",
-        "fr": "La station météo de démonstration lit de vraies données via l'API gratuite Open-Meteo : choisissez les coordonnées à observer. Pas de compte, pas de clé d'API."
+        "en": "Unofficial connector, not affiliated with IOmeter GmbH. It reads your IOmeter (the reader clipped on the optical port of a German smart meter, and its Wi-Fi bridge) through the local API of the bridge, without any cloud: the power every 10 seconds, the consumption index (1.8.0) every minute for the Gladys energy monitoring, and, when the meter gives them, the tariff and injection indexes, the power of each phase, the battery and the signal of the reader. Read only. Not the Discovergy (inexogy) integration. Never tested with a real IOmeter.",
+        "fr": "Connecteur non officiel, sans lien avec IOmeter GmbH. Il lit votre IOmeter (le lecteur posé sur l'interface optique d'un compteur intelligent allemand, et son pont Wi-Fi) par l'API locale du pont, sans cloud : la puissance toutes les 10 secondes, l'index de consommation (1.8.0) chaque minute pour le suivi énergétique de Gladys, et, quand le compteur les donne, les index par tarif et d'injection, la puissance de chaque phase, la pile et le signal du lecteur. Lecture seule. Ce n'est pas l'intégration Discovergy (inexogy). Jamais testé avec un vrai IOmeter."
       },
       "links": [
         {
-          "url": "https://open-meteo.com/en/docs",
-          "label": { "en": "Open-Meteo documentation", "fr": "Documentation Open-Meteo" }
+          "url": "https://github.com/LM1LC3N7/gladys-iometer/blob/main/docs/fr.md",
+          "label": { "en": "Guide (French)", "fr": "Guide (français)" }
+        },
+        {
+          "url": "https://github.com/LM1LC3N7/gladys-iometer/blob/main/docs/en.md",
+          "label": { "en": "Guide (English)", "fr": "Guide (anglais)" }
         }
       ]
     },
     {
-      "key": "latitude",
-      "type": "number",
-      "label": { "en": "Latitude", "fr": "Latitude" },
-      "description": {
-        "en": "Latitude used for the demo weather sensor.",
-        "fr": "Latitude utilisée par le capteur météo de démonstration."
-      },
-      "placeholder": { "en": "e.g. 48.8566", "fr": "ex. 48.8566" },
+      "key": "address",
+      "type": "string",
       "required": true,
-      "default": 48.8566,
-      "min": -90,
-      "max": 90
-    },
-    {
-      "key": "longitude",
-      "type": "number",
-      "label": { "en": "Longitude", "fr": "Longitude" },
+      "label": { "en": "IOmeter bridge address", "fr": "Adresse du pont IOmeter" },
       "description": {
-        "en": "Longitude used for the demo weather sensor.",
-        "fr": "Longitude utilisée par le capteur météo de démonstration."
+        "en": "The IP address of the IOmeter bridge on your network (shown by your router or the IOmeter app; with no address, the Discover tab looks for it on the network), with a port only if it is not 80. Preferably give it a fixed address in your router; if it changes, enter the new one: the device and its history are kept.",
+        "fr": "L'adresse IP du pont IOmeter sur votre réseau (visible dans votre box ou l'application IOmeter ; sans adresse, l'onglet Découverte le cherche sur le réseau), avec un port seulement s'il n'est pas 80. Donnez-lui de préférence une adresse fixe dans votre box ; si elle change, saisissez la nouvelle : l'appareil et son historique sont gardés."
       },
-      "placeholder": { "en": "e.g. 2.3522", "fr": "ex. 2.3522" },
-      "required": true,
-      "default": 2.3522,
-      "min": -180,
-      "max": 180
-    },
-    {
-      "key": "unit",
-      "type": "select",
-      "label": { "en": "Temperature unit", "fr": "Unité de température" },
-      "required": false,
-      "default": "celsius",
-      "options": [
-        { "value": "celsius", "label": { "en": "Celsius", "fr": "Celsius" } },
-        { "value": "fahrenheit", "label": { "en": "Fahrenheit", "fr": "Fahrenheit" } }
-      ]
-    },
-    {
-      "key": "poll_frequency",
-      "type": "number",
-      "label": { "en": "Refresh interval (s)", "fr": "Intervalle de rafraîchissement (s)" },
-      "description": {
-        "en": "How often sensors are polled, in seconds (one minute minimum).",
-        "fr": "Fréquence d'interrogation des capteurs, en secondes (une minute minimum)."
-      },
-      "required": false,
-      "default": 300,
-      "min": 60,
-      "max": 3600
+      "placeholder": { "en": "e.g. 192.168.1.40", "fr": "ex. 192.168.1.40" }
     }
   ],
   "actions": [
     {
-      "key": "test_weather",
-      "label": { "en": "Test the weather provider", "fr": "Tester le fournisseur météo" },
-      "timeout_seconds": 30
+      "key": "test_connection",
+      "timeout_seconds": 30,
+      "label": { "en": "Test the connection", "fr": "Tester la connexion" },
+      "description": {
+        "en": "Reads the net power and the consumption index of the meter once from the IOmeter bridge at this address.",
+        "fr": "Lit une fois la puissance nette et l'index de consommation du compteur depuis le pont IOmeter à cette adresse."
+      }
     },
     {
-      "key": "identify",
-      "label": { "en": "Identify a device", "fr": "Identifier un appareil" },
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Device", "fr": "Appareil" },
-          "required": true
-        }
-      ]
-    }
-  ],
-  "scene_triggers": [
-    {
-      "key": "motion_detected",
-      "label": { "en": "Motion detected", "fr": "Mouvement détecté" },
+      "key": "accept_held_index",
+      "timeout_seconds": 30,
+      "label": { "en": "Accept the held index", "fr": "Accepter l'index retenu" },
       "description": {
-        "en": "A demo motion sensor saw a person or an animal move.",
-        "fr": "Un détecteur de démonstration a vu bouger une personne ou un animal."
-      },
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Sensor", "fr": "Détecteur" }
-        },
-        {
-          "key": "target",
-          "type": "multi_select",
-          "label": { "en": "What moved", "fr": "Ce qui a bougé" },
-          "options": [
-            { "value": "person", "label": { "en": "Person", "fr": "Personne" } },
-            { "value": "animal", "label": { "en": "Animal", "fr": "Animal" } }
-          ]
-        }
-      ],
-      "variables": [
-        {
-          "key": "target",
-          "type": "string",
-          "label": { "en": "What moved", "fr": "Ce qui a bougé" }
-        }
-      ]
-    }
-  ],
-  "scene_actions": [
-    {
-      "key": "identify_device",
-      "label": { "en": "Identify a device", "fr": "Identifier un appareil" },
-      "description": {
-        "en": "Make a device signal itself (the demo light blinks).",
-        "fr": "Fait se signaler un appareil (la lampe de démonstration clignote)."
-      },
-      "timeout_seconds": 15,
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Device", "fr": "Appareil" },
-          "required": true
-        }
-      ],
-      "outputs": [
-        {
-          "key": "signalled",
-          "type": "boolean",
-          "label": { "en": "Device signalled", "fr": "Appareil signalé" }
-        }
-      ]
-    }
-  ],
-  "widgets": [
-    {
-      "key": "demo_status",
-      "label": { "en": "Demo status", "fr": "État de la démo" },
-      "description": {
-        "en": "Live temperature and plug power, plug connection and observed location.",
-        "fr": "Température et puissance en direct, connexion de la prise, position observée."
-      },
-      "icon": "activity",
-      "action_timeout_seconds": 15
+        "en": "Only when the status shows a consumption index held back (a jump or a drop) and it is right. Two clicks: the first lists the value held and accepts nothing, the second (a few seconds later, within 5 minutes) takes exactly that value. A jump is then counted at once as consumption; a drop bills nothing. Saving the configuration never accepts it.",
+        "fr": "Seulement quand l'état affiche un index de consommation retenu (un saut ou une baisse) et qu'il est juste. Deux clics : le premier liste la valeur retenue et n'accepte rien, le second (quelques secondes plus tard, dans les 5 minutes) prend exactement cette valeur. Un saut est alors compté d'un coup comme consommation ; une baisse ne facture rien. Enregistrer la configuration ne l'accepte jamais."
+      }
     }
   ]
 }
