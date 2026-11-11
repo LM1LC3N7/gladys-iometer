@@ -20,6 +20,9 @@
 - [ ] The values of `powerStatus` (`battery`, `wired`?) and of
       `attachmentStatus` (`attached`, `detached`), `connectionStatus`
       (`connected`, `disconnected`).
+- [ ] The time zone of the reading `time`: a time without a zone is read as
+      UTC (the container); a German local time would make a 3 h old reading
+      look 1 h old (review r2, M2-2).
 - [ ] The mDNS name of the bridge contains `_iometer._tcp` in what the core
       gives back.
 
@@ -51,6 +54,8 @@
 - Plain counters (src/counters.js): never lower; a jump beyond the guard
   margin held, taken back by a plausible value or after an hour of
   consistent readings (not billed: repetition is enough, unlike the index).
+- A plain counter without reference takes its first value only once a
+  second reading agrees with it (review r2, M2-1).
 - A reading older than 2 h (against the bridge's Date header, else our
   clock), or unchanged for 2 h: nothing of it is published (review r1, I1).
 - A Gladys value without a date is still an index reference, dated 0.

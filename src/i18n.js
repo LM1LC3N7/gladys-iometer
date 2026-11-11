@@ -89,8 +89,8 @@ export const T = {
       fr: 'Le dernier relevé du compteur date de plus de 2 heures (lecteur décroché, pile vide ?) : rien n’en est envoyé, les index non plus.',
     },
     counterJump: {
-      en: 'A tariff or injection index jumped further than a home can use: held, not sent. It is taken back when the meter gives a plausible value again, or once it has kept giving the new one for an hour.',
-      fr: 'Un index de tarif ou d’injection a sauté plus loin qu’un foyer ne peut consommer : retenu, non envoyé. Il reprend dès que le compteur redonne une valeur plausible, ou quand il a donné la nouvelle pendant une heure.',
+      en: 'A tariff or injection index jumped further than a home can use: held, not sent. It is taken back when the meter gives a plausible value again, or once it has kept giving the new one for an hour (a spike taken that way leaves the real values lower: accepting a drop of the consumption index resets the counters).',
+      fr: 'Un index de tarif ou d’injection a sauté plus loin qu’un foyer ne peut consommer : retenu, non envoyé. Il reprend dès que le compteur redonne une valeur plausible, ou quand il a donné la nouvelle pendant une heure (un pic pris ainsi laisse les vraies valeurs plus basses : accepter une baisse de l’index de consommation remet les compteurs à zéro).',
     },
     counterDown: {
       en: 'A tariff or injection index read lower than before: not sent (a counter never goes down). Accepting a held consumption index drop (a new meter) resets them.',

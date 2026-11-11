@@ -64,7 +64,8 @@ laisse repartir des nouvelles valeurs. Un saut de l'un d'eux plus grand que ce
 qu'un foyer peut consommer est retenu aussi (il ne devient jamais le nouveau
 plancher) : il reprend dès que le compteur redonne une valeur plausible, ou
 quand le compteur a donné la nouvelle valeur pendant une heure, chaque relevé
-plausible après le précédent (ces index ne sont pas facturés).
+plausible après le précédent (ces index ne sont pas facturés). Sur un nouvel appareil, leur première
+valeur est envoyée quand un second relevé la confirme.
 
 ## Ce que dit l'état
 

@@ -69,7 +69,15 @@ const ALL = {
 };
 
 /** The device as the user created it from the discovered one; `last`: { key: [value, iso] }. */
-function created(caps = ALL, last = {}) {
+function created(caps = ALL, given = {}) {
+  // Gladys already holds the plain counters of the fixture (a device in use).
+  const iso = new Date(NOW - MINUTE).toISOString();
+  const last = {
+    consumption_t1: [8000, iso],
+    consumption_t2: [4345.679, iso],
+    production_index: [2000.5, iso],
+    ...given,
+  };
   const gladys = createFakeGladys({ selector: SELECTOR });
   const device = buildDevice(gladys, caps, ADDRESS);
   for (const f of device.features) {
@@ -727,6 +735,22 @@ test('accept: the device created again between the clicks; its old held state is
   // The new device starts from the reading, not from the old device's held jump.
   assert.equal(indexes(ctx.gladys).at(-1), 22345.679);
   assert.equal(ctx.store.data[F('consumption_index')].held, null);
+});
+
+test('accept: a drop listed, then a rise held from the same reference, is never taken', async () => {
+  const routes = bridgeRoutes();
+  const ctx = await setup({ routes, devices: [created()] });
+  await ctx.app.start(CONFIG);
+  await ctx.app.idle();
+  live(routes, { [OBIS.index]: 12345678 });
+  await ctx.tick(MINUTE);
+  const first = await ctx.gladys.fake.action(ACTIONS.ACCEPT_HELD);
+  assert.match(first.data.message.en, /from 12345.679 down to 12345.678/);
+  live(routes, { [OBIS.index]: 12347859 });
+  await ctx.tick(MINUTE);
+  assert.match(await second(ctx, 1_000), /changed/);
+  await ctx.tick(MINUTE);
+  assert.ok(!indexes(ctx.gladys).includes(12347.859));
 });
 
 test('accept: a guard built again between the clicks never takes the first click', async () => {

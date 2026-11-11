@@ -8,7 +8,10 @@
 //   single glitch can never lock the counter;
 // - a held jump is taken when the meter keeps giving it, each value plausible
 //   after the one before, for COUNTER_JUMP_CONFIRM: these counters are not
-//   billed, a repeated value is enough (unlike the consumption index).
+//   billed, a repeated value is enough (unlike the consumption index);
+// - without a reference (a new device), the first value is taken only once a
+//   second one agrees with it (not lower, within the margin): a spike as the
+//   first reading never becomes the floor.
 // -----------------------------------------------------------------------------
 
 import { COUNTER_JUMP_CONFIRM } from './constants.js';
@@ -34,7 +37,12 @@ export class CounterFloor {
       return false;
     }
     if (!this.floor) {
-      return this.take(value, at);
+      const c = this.candidate;
+      if (c && value >= c.value && value - c.value <= margin(c.at, at)) {
+        return this.take(value, at);
+      }
+      this.candidate = { value, at };
+      return false;
     }
     if (value < this.floor.value) {
       this.state = 'down';
@@ -64,6 +72,7 @@ export class CounterFloor {
 
   take(value, at) {
     this.floor = { value, at };
+    this.candidate = undefined;
     this.pending = undefined;
     this.state = 'ok';
     return true;
@@ -72,6 +81,7 @@ export class CounterFloor {
   /** A new meter: starts again from the next value. */
   reset() {
     this.floor = undefined;
+    this.candidate = undefined;
     this.pending = undefined;
     this.state = 'ok';
   }

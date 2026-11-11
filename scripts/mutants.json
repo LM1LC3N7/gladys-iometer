@@ -326,8 +326,8 @@
   {
     "name": "address: dotted IPv4 checked",
     "file": "src/config.js",
-    "from": "if (/^[\\d.]+$/.test(host) && !unicastIPv4(host)) {",
-    "to": "if (false) {"
+    "from": "&& !unicastIPv4(host)) {",
+    "to": ") {"
   },
   {
     "name": "address: octets 0-255",
@@ -352,5 +352,29 @@
     "file": "src/config.js",
     "from": "return /^[0:]+$/.test(lower) || lower.startsWith('ff');",
     "to": "return false;"
+  },
+  {
+    "name": "accept: same direction",
+    "file": "src/app.js",
+    "from": "      held.direction === listed.direction &&\n",
+    "to": "\n"
+  },
+  {
+    "name": "counters: first value confirmed by a second",
+    "file": "src/counters.js",
+    "from": "if (c && value >= c.value && value - c.value <= margin(c.at, at)) {",
+    "to": "if (true) {"
+  },
+  {
+    "name": "address: numeric last label",
+    "file": "src/config.js",
+    "from": "(/^\\d+$/.test(lastLabel) || /^0x[0-9a-f]*$/i.test(lastLabel)) && ",
+    "to": ""
+  },
+  {
+    "name": "address: hex last label",
+    "file": "src/config.js",
+    "from": " || /^0x[0-9a-f]*$/i.test(lastLabel)",
+    "to": ""
   }
 ]

@@ -201,6 +201,12 @@ test('the address: IP, host name, port, pasted URL; never credentials', () => {
     '999.1.1.1',
     '10.999.1.1',
     '10.1.1.256',
+    '0x0',
+    '224.1',
+    '0x7f.1',
+    '0xe0.0.0.1',
+    '127.1',
+    'bridge.42',
     '1.2.3',
     '1.2.3.4.5',
     '::',
@@ -272,11 +278,19 @@ test('plain counter: a real jump kept an hour, each value plausible, is taken; n
   f.accept(5000, t0);
   assert.equal(f.accept(4000, t0 + 59 * 60_000), false);
   assert.equal(f.accept(4000.01, t0 + COUNTER_JUMP_CONFIRM), false);
-  // No reference: the first value; a reset starts again.
+  // No reference: the first value only once a second one agrees (a spike
+  // as the first reading never becomes the floor); a reset starts again.
   const e = new CounterFloor(undefined);
-  assert.equal(e.accept(7, 0), true);
+  assert.equal(e.accept(500000, 0), false);
+  assert.equal(e.accept(1000, 60_000), false, 'lower: a new candidate');
+  assert.equal(e.accept(1000.1, 120_000), true);
+  assert.equal(e.floor.value, 1000.1);
   e.reset();
-  assert.equal(e.accept(3, 1), true);
+  assert.equal(e.accept(3, 1), false);
+  assert.equal(e.accept(3, 2), true);
+  const g = new CounterFloor(undefined);
+  g.accept(1000, 0);
+  assert.equal(g.accept(500000, 60_000), false, 'beyond the margin: not taken');
   assert.equal(new CounterFloor({ value: 0, at: 0 }).floor, undefined);
 });
 

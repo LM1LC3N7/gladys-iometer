@@ -63,7 +63,8 @@ again from the new values. A jump of one of them further than a home can use
 is held too (it never becomes the new floor): it is taken back as soon as the
 meter gives a plausible value again, or once the meter has kept giving the new
 value, each reading plausible after the one before, for an hour (these
-indexes are not billed).
+indexes are not billed). On a new device, their first value is sent once a
+second reading agrees with it.
 
 ## What the status says
 

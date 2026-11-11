@@ -39,7 +39,10 @@ export function parseAddress(raw) {
   if (host.length > 253 || !host.split('.').every((label) => LABEL.test(label))) {
     return { error: 'invalid' };
   }
-  if (/^[\d.]+$/.test(host) && !unicastIPv4(host)) {
+  // A name whose last label is a number (decimal, hex 0x.., short forms like
+  // 224.1) is read by fetch as an IPv4 address: only four decimal octets.
+  const lastLabel = host.split('.').at(-1);
+  if ((/^\d+$/.test(lastLabel) || /^0x[0-9a-f]*$/i.test(lastLabel)) && !unicastIPv4(host)) {
     return { error: 'invalid' };
   }
   return withPort(host.toLowerCase(), match[2]);
