@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-11
+
 ### Added
 
 - First version: the IOmeter bridge read through its local API every 10
@@ -19,3 +21,6 @@ the notes of the version's GitHub Release.
   the billed index with a two-click "Accept the held index" action; network
   discovery (mDNS) of the bridge from the Discover tab; a reading more than 2
   hours old is never published; plain counters held on a drop or a spike.
+
+[Unreleased]: https://github.com/LM1LC3N7/gladys-iometer/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-iometer/releases/tag/v0.1.1

@@ -6,8 +6,8 @@
     "en": "Unofficial: IOmeter smart meter reader on your network: power, consumption and injection indexes.",
     "fr": "Non officiel : lecteur de compteur IOmeter en local : puissance, index consommé et injecté."
   },
-  "version": "0.1.0",
-  "docker_image": "ghcr.io/lm1lc3n7/gladys-iometer:0.1.0",
+  "version": "0.1.1",
+  "docker_image": "ghcr.io/lm1lc3n7/gladys-iometer:0.1.1",
   "gladys_version": ">=5.1.0",
   "cover_image": "https://raw.githubusercontent.com/LM1LC3N7/gladys-iometer/main/cover.png",
   "categories": ["energy"],

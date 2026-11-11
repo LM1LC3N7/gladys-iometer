@@ -1,6 +1,6 @@
 {
   "name": "gladys-iometer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "IOmeter for Gladys Assistant: the smart meter reader read through the local API of its bridge, power and consumption index fed to the energy monitoring, tariff and injection indexes, phases, battery and signal as sensors.",
   "type": "module",
