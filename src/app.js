@@ -31,6 +31,7 @@ import {
   NO_STATUS_RETRY,
   POWER_INTERVAL,
   READING_STALE_AFTER,
+  READING_TOO_OLD,
   RETRY_MAX,
   RETRY_MIN,
   SECONDARY_RETRY,
@@ -50,6 +51,7 @@ import {
   statusStates,
 } from './devices.js';
 import { IndexGuard, margin } from './guard.js';
+import { CounterFloor } from './counters.js';
 import { parseAddress } from './config.js';
 import { createFileStore } from './store.js';
 import { T } from './i18n.js';
@@ -78,23 +80,20 @@ const freshPages = () =>
     PAGES.map((p) => [p.name, { nextAt: 0, failing: false, data: undefined, fresh: false }]),
   );
 
-/** The reading field of each plain counter. */
-const COUNTER_FIELD = {
-  [FEATURE.CONSUMPTION_T1]: 'consumptionT1',
-  [FEATURE.CONSUMPTION_T2]: 'consumptionT2',
-  [FEATURE.PRODUCTION_INDEX]: 'production',
-};
-
-/** The index Gladys already holds for a feature of a created device, when it says so. */
+/**
+ * The index Gladys already holds for a feature of a created device, when it
+ * says so. Without a readable date, the value is still a reference, an old
+ * one (dated 0): a lower value is held all the same.
+ */
 function lastValueOf(device, featureId) {
   const feature = (device?.features ?? []).find((f) => f.external_id === featureId);
   const value = Number(feature?.last_value);
   const at = Date.parse(feature?.last_value_changed ?? '');
   return feature?.last_value !== null &&
     feature?.last_value !== undefined &&
-    Number.isFinite(value) &&
-    Number.isFinite(at)
-    ? { value, at }
+    feature?.last_value !== '' &&
+    Number.isFinite(value)
+    ? { value, at: Number.isFinite(at) ? at : 0 }
     : undefined;
 }
 
@@ -130,7 +129,6 @@ export class IOmeterApp {
      * (the last one published, or Gladys' one), never published lower.
      */
     this.floors = undefined;
-    this.counterDown = false;
     /** The last index check gave no index (the register missing). */
     this.indexUndefined = false;
     this.lastIndexAt = undefined;
@@ -414,7 +412,6 @@ export class IOmeterApp {
       this.guard = undefined;
       this.savedGuard = undefined;
       this.floors = undefined;
-      this.counterDown = false;
       this.lastIndexAt = undefined;
       await this.run(this.generation, () => this.tick());
     }
@@ -545,15 +542,36 @@ export class IOmeterApp {
     return this.readingStamp !== undefined && mono - this.freshAt >= READING_STALE_AFTER;
   }
 
+  /**
+   * Nothing of the reading is published: its time is older than
+   * READING_TOO_OLD against the Date of the answer (our session clock when
+   * the bridge sends none), or it has not changed for that long. A time that
+   * cannot be read is never "too old" by its age.
+   */
+  isTooOld(meter, mono) {
+    if (this.readingStamp !== undefined && mono - this.freshAt >= READING_TOO_OLD) {
+      return true;
+    }
+    const time = Date.parse(meter.time ?? '');
+    const served = Number.isFinite(meter.servedAt) ? meter.servedAt : this.now();
+    return Number.isFinite(time) && served - time > READING_TOO_OLD;
+  }
+
+  counterState(state) {
+    return [...(this.floors?.values() ?? [])].some((f) => f.state === state);
+  }
+
   okMessage(meter, mono) {
     const notes = [];
     const failing = PAGES.map((p) => p.name).filter((name) => this.pages[name].failing);
     if (failing.length > 0) notes.push(T.notes.pages(failing));
-    if (this.isStale(mono)) notes.push(T.notes.stale);
+    if (this.isTooOld(meter, mono)) notes.push(T.notes.old);
+    else if (this.isStale(mono)) notes.push(T.notes.stale);
     if (this.capabilities?.consumption && this.indexUndefined) {
       notes.push(T.notes.noIndex);
     }
-    if (this.counterDown) notes.push(T.notes.counterDown);
+    if (this.counterState('down')) notes.push(T.notes.counterDown);
+    if (this.counterState('jump')) notes.push(T.notes.counterJump);
     if (this.guard?.held) notes.push(T.notes.held(this.guard.held));
     return T.ok(this.config.address, notes);
   }
@@ -609,7 +627,7 @@ export class IOmeterApp {
       this.floors = new Map(
         PLAIN_COUNTERS.map((key) => [
           key,
-          lastValueOf(created, this.externalIds().feature(key))?.value ?? 0,
+          new CounterFloor(toSession(lastValueOf(created, this.externalIds().feature(key)))),
         ]),
       );
       // The reference taken from /data keeps its wall date there while it is
@@ -634,8 +652,10 @@ export class IOmeterApp {
       return;
     }
     const external = this.externalIds();
-    // A frozen reading (reader off the meter): its power would look live, it is not sent.
-    const states = this.isStale(mono) ? [] : liveStates(external, meter);
+    // A frozen reading (reader off the meter): its power would look live, it
+    // is not sent; too old, nothing of it is (the indexes neither).
+    const old = this.isTooOld(meter, mono);
+    const states = old || this.isStale(mono) ? [] : liveStates(external, meter);
     if (statusFresh) {
       states.push(...statusStates(external, status.data));
     }
@@ -643,7 +663,7 @@ export class IOmeterApp {
       // A clock set back (a monotonic clock never is): paced again from now.
       this.lastIndexAt = undefined;
     }
-    if (this.lastIndexAt === undefined || mono - this.lastIndexAt >= INDEX_INTERVAL) {
+    if (!old && (this.lastIndexAt === undefined || mono - this.lastIndexAt >= INDEX_INTERVAL)) {
       this.lastIndexAt = mono;
       const indexId = external.feature(FEATURE.CONSUMPTION_INDEX);
       const guard = this.guardOf(created, indexId);
@@ -652,7 +672,7 @@ export class IOmeterApp {
       this.indexUndefined = total === undefined;
       const plausible = total !== undefined && guard.accept(total, this.sessionNow());
       await this.saveGuard(indexId);
-      if (total !== undefined && !plausible) {
+      if (total !== undefined && !plausible && guard.held) {
         this.logger.warn(
           `IOmeter bridge consumption index ${guard.held?.direction === 'down' ? 'drop' : 'jump'} held back: the "Accept the held index" button takes it`,
         );
@@ -660,21 +680,13 @@ export class IOmeterApp {
       // While a value is held, the last accepted one is sent again (no delta
       // for the core; the heartbeat keeps its date recent in Gladys).
       const held = guard.held ? guard.last?.value : undefined;
-      const counters = indexStates(external, meter, plausible ? total : held, this.floors);
-      const down = PLAIN_COUNTERS.some(
-        (key) =>
-          typeof meter[COUNTER_FIELD[key]] === 'number' &&
-          meter[COUNTER_FIELD[key]] > 0 &&
-          // Compared as Gladys holds them (3 decimals).
-          round(meter[COUNTER_FIELD[key]], 3) < (this.floors.get(key) ?? 0),
+      const wasOk = PLAIN_COUNTERS.every((k) => this.floors.get(k).state === 'ok');
+      const at = this.sessionNow();
+      const counters = indexStates(external, meter, plausible ? total : held, (key, value) =>
+        this.floors.has(key) ? this.floors.get(key).accept(value, at) : true,
       );
-      if (down && !this.counterDown) {
-        this.logger.warn('IOmeter bridge: a plain counter read lower than before, not sent');
-      }
-      this.counterDown = down;
-      for (const s of counters) {
-        const key = s.device_feature_external_id.split(':').at(-1);
-        if (this.floors.has(key)) this.floors.set(key, Math.max(this.floors.get(key), s.state));
+      if (wasOk && PLAIN_COUNTERS.some((k) => this.floors.get(k).state !== 'ok')) {
+        this.logger.warn('IOmeter bridge: a plain counter read lower or far higher, not sent');
       }
       states.push(...counters);
     }
@@ -802,8 +814,7 @@ export class IOmeterApp {
     );
     if (accepted.direction === 'down') {
       // A new meter (or a reset): its plain counters start lower too.
-      this.floors = new Map(PLAIN_COUNTERS.map((key) => [key, 0]));
-      this.counterDown = false;
+      for (const floor of this.floors?.values() ?? []) floor.reset();
     }
     // Published at the next read, which comes now.
     this.lastIndexAt = undefined;

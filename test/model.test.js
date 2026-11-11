@@ -19,6 +19,9 @@ import {
   liveStates,
 } from '../src/devices.js';
 import { createFileStore, StoreUnreadable } from '../src/store.js';
+import { CounterFloor } from '../src/counters.js';
+import { COUNTER_JUMP_CONFIRM, HTTP_TIMEOUT } from '../src/constants.js';
+import { IOmeterClient } from '../src/iometer/client.js';
 import {
   NO_CAPABILITIES,
   bringsNew,
@@ -160,12 +163,17 @@ test('states: rounded, power taken never below 0, counters never 0 nor under the
   );
   assert.equal(live.power, 0);
   assert.equal(live.net_power, -50);
-  const floors = new Map([[FEATURE.PRODUCTION_INDEX, 3000]]);
-  const states = indexStates(external, { ...r, consumptionT2: 0 }, 12345.679, floors);
+  const asked = [];
+  const allow = (k, v) => (asked.push([k, v]), k !== FEATURE.PRODUCTION_INDEX);
+  const states = indexStates(external, { ...r, consumptionT2: 0 }, 12345.679, allow);
+  assert.deepEqual(asked, [
+    [FEATURE.CONSUMPTION_T1, 8000],
+    [FEATURE.PRODUCTION_INDEX, 2000.5],
+  ]);
   const keys = states.map((s) => s.device_feature_external_id.split(':').at(-1));
   assert.deepEqual(keys, ['consumption_index', 'consumption_t1']);
   assert.deepEqual(
-    indexStates(external, r, 0, new Map())
+    indexStates(external, r, 0)
       .map((s) => s.state)
       .includes(0),
     false,
@@ -178,10 +186,40 @@ test('the address: IP, host name, port, pasted URL; never credentials', () => {
     address: 'iometer.local:8080',
   });
   assert.deepEqual(parseAddress('192.168.1.40:80'), { address: '192.168.1.40' });
-  for (const bad of ['admin:pw@1.2.3.4', 'a b', 'x:99999', 'bad\r\nhost', 'a..b']) {
+  for (const bad of [
+    'admin:pw@1.2.3.4',
+    'a b',
+    'x:99999',
+    'bad\r\nhost',
+    'a..b',
+    '0.0.0.0',
+    '255.255.255.255',
+    '224.0.0.1',
+    '239.1.2.3',
+    '240.0.0.1',
+    '0.1.2.3',
+    '999.1.1.1',
+    '10.999.1.1',
+    '10.1.1.256',
+    '1.2.3',
+    '1.2.3.4.5',
+    '::',
+    '[::]:80',
+    'ff02::1',
+    '[ff02::1]',
+  ]) {
     assert.ok(parseAddress(bad).error, bad);
   }
   assert.deepEqual(normalizeConfig({ address: 'x:0' }), { address: '', invalidAddress: true });
+  for (const good of [
+    '10.0.0.1',
+    '223.255.255.254',
+    'fe80::1',
+    '[2001:db8::1]:8080',
+    'my-bridge',
+  ]) {
+    assert.ok(!parseAddress(good).error, good);
+  }
 });
 
 test('the /data store: written through a temporary file; missing = empty; unreadable throws', async (t) => {
@@ -197,4 +235,69 @@ test('the /data store: written through a temporary file; missing = empty; unread
   assert.throws(() => store.load(), StoreUnreadable);
   await mkdir(join(dir, 'dir.json'));
   assert.throws(() => createFileStore(join(dir, 'dir.json')).load(), StoreUnreadable);
+});
+
+const HOUR = 3_600_000;
+
+test('plain counter: a spike is held and never raises the floor; back, it goes on', () => {
+  const c = new CounterFloor({ value: 1000, at: 0 });
+  assert.equal(c.accept(1000.5, HOUR / 60), true);
+  assert.equal(c.accept(500000, 2 * (HOUR / 60)), false);
+  assert.equal(c.state, 'jump');
+  assert.equal(c.floor.value, 1000.5);
+  assert.equal(c.accept(1000.6, 3 * (HOUR / 60)), true);
+  assert.equal(c.state, 'ok');
+  assert.equal(c.accept(999, 4 * (HOUR / 60)), false);
+  assert.equal(c.state, 'down');
+  assert.equal(c.accept(0, 5 * (HOUR / 60)), false);
+  assert.equal(c.accept(1000.6, 6 * (HOUR / 60)), true, 'equal: published');
+  assert.equal(c.floor.at, 3 * (HOUR / 60), 'equal: date not moved');
+});
+
+test('plain counter: a real jump kept an hour, each value plausible, is taken; not sooner', () => {
+  const c = new CounterFloor({ value: 1000, at: 0 });
+  const t0 = HOUR / 60;
+  for (let i = 0; i * 60_000 < COUNTER_JUMP_CONFIRM; i += 1) {
+    assert.equal(c.accept(5000 + i * 0.01, t0 + i * 60_000), false, `minute ${i}`);
+  }
+  assert.equal(c.accept(5001, t0 + COUNTER_JUMP_CONFIRM), true);
+  // A held jump broken by another implausible one starts again.
+  const d = new CounterFloor({ value: 1000, at: 0 });
+  d.accept(5000, t0);
+  d.accept(90000, t0 + 30 * 60_000);
+  assert.equal(d.accept(90000.1, t0 + COUNTER_JUMP_CONFIRM + 1), false);
+  assert.equal(d.accept(4000, t0 + COUNTER_JUMP_CONFIRM + 2), false, 'lower than the pending');
+  // A lower value while a jump is pending starts the hour again.
+  const f = new CounterFloor({ value: 1000, at: 0 });
+  f.accept(5000, t0);
+  assert.equal(f.accept(4000, t0 + 59 * 60_000), false);
+  assert.equal(f.accept(4000.01, t0 + COUNTER_JUMP_CONFIRM), false);
+  // No reference: the first value; a reset starts again.
+  const e = new CounterFloor(undefined);
+  assert.equal(e.accept(7, 0), true);
+  e.reset();
+  assert.equal(e.accept(3, 1), true);
+  assert.equal(new CounterFloor({ value: 0, at: 0 }).floor, undefined);
+});
+
+test('bounds kept by default: request time, counters above 1e9 kWh, long time and OBIS', () => {
+  assert.equal(new IOmeterClient({ address: 'x' }).timeout, HTTP_TIMEOUT);
+  assert.ok(HTTP_TIMEOUT >= 1000 && HTTP_TIMEOUT <= 15_000);
+  const big = parseReading(
+    reading([{ obis: '01-00:01.08.00*ff', value: 2e12 + 1000, unit: 'Wh' }]),
+  );
+  assert.equal(big.consumption, undefined);
+  assert.equal(parseReading(reading([], 'x'.repeat(41))).time, undefined);
+  assert.equal(parseReading(reading([], 'x'.repeat(40))).time, 'x'.repeat(40));
+  const long = '01-00:01.08.00*ff' + ' '.repeat(30);
+  assert.equal(parseReading(reading([{ obis: long, value: 5, unit: 'Wh' }])).empty, true);
+});
+
+test('the /data store: a file above 256 KiB is not ours', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'iometer-store-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(join(dir, 's.json'), JSON.stringify({ a: 'x'.repeat(300 * 1024) }));
+  assert.throws(() => createFileStore(join(dir, 's.json')).load(), StoreUnreadable);
+  await writeFile(join(dir, 's.json'), JSON.stringify({ a: 'x'.repeat(200 * 1024) }));
+  assert.equal(createFileStore(join(dir, 's.json')).load().a.length, 200 * 1024);
 });

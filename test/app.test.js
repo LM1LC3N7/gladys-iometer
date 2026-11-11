@@ -585,3 +585,231 @@ test('the device created later: its values are read at once', async () => {
   assert.equal(status(gladys).connected, true);
   assert.match(status(gladys).message.fr, /Connecté au pont IOmeter/);
 });
+
+// --- Review r1 -------------------------------------------------------------------
+
+const HOUR = 60 * MINUTE;
+const at = (ms) => new Date(NOW + ms).toISOString();
+
+test('a reading hours old at the first contact: nothing published, the status says so', async () => {
+  const routes = bridgeRoutes();
+  routes[READING] = () => json(readingWith({}, at(-3 * 24 * HOUR)));
+  const { app, gladys, tick } = await setup({ routes, devices: [created()] });
+  await app.start(CONFIG);
+  await app.idle();
+  await tick(MINUTE);
+  for (const key of ['power', 'net_power', 'consumption_index', 'consumption_t1', 'power_l1']) {
+    assert.deepEqual(published(gladys, key), [], key);
+  }
+  assert.equal(gladys.fake.lastState(F('battery')), 83, 'the status is fresh');
+  assert.match(status(gladys).message.fr, /date de plus de 2 heures/);
+  live(routes);
+  await tick(MINUTE);
+  assert.equal(gladys.fake.lastState(F('consumption_index')), INDEX);
+  assert.doesNotMatch(status(gladys).message.fr, /2 heures/);
+});
+
+test('the age of a reading is judged on the Date of the bridge when it gives one', async () => {
+  const routes = bridgeRoutes();
+  const withDate = (time, date) => () =>
+    new Response(JSON.stringify(readingWith({}, time)), {
+      headers: { 'content-type': 'application/json', date: new Date(date).toUTCString() },
+    });
+  // The bridge clock 3 h behind ours: its reading is fresh.
+  routes[READING] = withDate(at(-3 * HOUR), NOW - 3 * HOUR + MINUTE);
+  const { app, gladys, tick } = await setup({ routes, devices: [created()] });
+  await app.start(CONFIG);
+  await app.idle();
+  assert.equal(gladys.fake.lastState(F('consumption_index')), INDEX);
+  // Its own clock says the reading is 3 h old: nothing.
+  routes[READING] = withDate(at(0), NOW + 3 * HOUR);
+  live(routes, { [OBIS.power]: 5 });
+  routes[READING] = withDate(at(MINUTE), NOW + 3 * HOUR);
+  await tick(MINUTE);
+  assert.notEqual(gladys.fake.lastState(F('power')), 5);
+  assert.match(status(gladys).message.fr, /date de plus de 2 heures/);
+});
+
+test('a reading frozen for 2 hours: the indexes stop too', async () => {
+  const routes = bridgeRoutes();
+  let i = 0;
+  routes[READING] = () => json(readingWith({ [OBIS.index]: 12345678.9 + (i += 1) }));
+  const { app, gladys, tick, clock } = await setup({ routes, devices: [created()] });
+  await app.start(CONFIG);
+  await app.idle();
+  // The reading time stays, our clock moves on (the bridge Date is absent: our clock, ahead too).
+  clock.now -= 3 * HOUR;
+  for (let t = 0; t < 2 * HOUR - MINUTE; t += MINUTE) await tick(MINUTE);
+  const count = indexes(gladys).length;
+  assert.ok(count > 100);
+  await tick(MINUTE);
+  await tick(MINUTE);
+  assert.equal(indexes(gladys).length, count);
+});
+
+test('a spike of a plain counter never locks it; the status says what is held', async () => {
+  const routes = bridgeRoutes();
+  const { app, gladys, tick } = await setup({ routes, devices: [created()] });
+  await app.start(CONFIG);
+  await app.idle();
+  live(routes, { [OBIS.injection]: 500_000_000 });
+  await tick(MINUTE);
+  assert.match(status(gladys).message.fr, /sauté plus loin/);
+  live(routes, { [OBIS.injection]: 2000600 });
+  for (let k = 0; k < 30; k += 1) await tick(MINUTE);
+  assert.equal(gladys.fake.lastState(F('production_index')), 2000.6);
+  assert.ok(!published(gladys, 'production_index').includes(500000));
+  assert.doesNotMatch(status(gladys).message.fr, /sauté plus loin|plus bas/);
+});
+
+/** Holds a jump of the index, then clicks once: the listed value. */
+async function heldAndListed() {
+  const routes = bridgeRoutes();
+  const ctx = await setup({ routes, devices: [created()] });
+  await ctx.app.start(CONFIG);
+  await ctx.app.idle();
+  live(routes, { [OBIS.index]: 22345678.9 });
+  await ctx.tick(MINUTE);
+  const first = await ctx.gladys.fake.action(ACTIONS.ACCEPT_HELD);
+  assert.match(first.data.message.en, /Nothing accepted yet/);
+  return { ...ctx, routes };
+}
+
+const second = async ({ gladys, clock }, after = 5_000) => {
+  clock.now += after;
+  clock.mono += after;
+  return (await gladys.fake.action(ACTIONS.ACCEPT_HELD)).data.message.en;
+};
+
+test('accept: a second click too soon or too late only lists again', async () => {
+  const soon = await heldAndListed();
+  assert.match(await second(soon, 1_000), /Nothing accepted yet/);
+  const late = await heldAndListed();
+  assert.match(await second(late, 5 * MINUTE + 1_000), /Nothing accepted yet/);
+  for (const ctx of [soon, late]) {
+    await ctx.tick(MINUTE);
+    assert.deepEqual(distinct(indexes(ctx.gladys)), [INDEX]);
+  }
+});
+
+test('accept: another value held between the clicks is never taken', async () => {
+  const cases = [
+    // Direction changed: a drop held from the same reference.
+    [{ [OBIS.index]: 5000 }, /changed/],
+    // Lower than listed.
+    [{ [OBIS.index]: 20345678.9 }, /changed/],
+    // Higher than listed by more than the margin since the first click.
+    [{ [OBIS.index]: 32345678.9 }, /changed/],
+  ];
+  for (const [values, pattern] of cases) {
+    const ctx = await heldAndListed();
+    live(ctx.routes, values);
+    await ctx.tick(MINUTE);
+    assert.match(await second(ctx, 5_000), pattern, JSON.stringify(values));
+    await ctx.tick(MINUTE);
+    assert.deepEqual(distinct(indexes(ctx.gladys)), [INDEX]);
+  }
+  // Another reference (from) since: a value back in line, then the same jump again.
+  const ctx = await heldAndListed();
+  live(ctx.routes, { [OBIS.index]: 12345800 });
+  await ctx.tick(MINUTE);
+  live(ctx.routes, { [OBIS.index]: 22345678.9 });
+  await ctx.tick(MINUTE);
+  assert.match(await second(ctx, 5_000), /changed/);
+  assert.ok(!indexes(ctx.gladys).includes(22345.679));
+});
+
+test('accept: the device created again between the clicks; its old held state is dropped', async () => {
+  const ctx = await heldAndListed();
+  assert.equal(ctx.store.data[F('consumption_index')].held.direction, 'up');
+  await ctx.gladys.fake.deviceCreated(created());
+  assert.match(await second(ctx, 5_000), /created again|No consumption index/);
+  // The new device starts from the reading, not from the old device's held jump.
+  assert.equal(indexes(ctx.gladys).at(-1), 22345.679);
+  assert.equal(ctx.store.data[F('consumption_index')].held, null);
+});
+
+test('accept: a guard built again between the clicks never takes the first click', async () => {
+  const ctx = await heldAndListed();
+  // Created again with the same reference: the new guard holds the same jump.
+  await ctx.gladys.fake.deviceCreated(created(ALL, { consumption_index: [INDEX, at(0)] }));
+  assert.match(await second(ctx, 5_000), /created again/);
+  await ctx.tick(MINUTE);
+  assert.ok(!indexes(ctx.gladys).includes(22345.679));
+});
+
+test('a slow bridge: never two requests at once', async () => {
+  const routes = bridgeRoutes();
+  let release;
+  let inFlight = 0;
+  let peak = 0;
+  routes[READING] = async () => {
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    await new Promise((resolve) => (release = resolve));
+    inFlight -= 1;
+    return json(readingWith({}));
+  };
+  const { app, fake, tick } = await setup({ routes, devices: [created()] });
+  await app.start(CONFIG);
+  const ticks = [tick(), tick(), tick()];
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(fake.calls.filter((c) => c.path === READING).length, 1);
+  release();
+  await Promise.all(ticks);
+  await app.idle();
+  assert.equal(peak, 1);
+});
+
+test('only the features of the created device; status and /data written only on change', async () => {
+  const routes = bridgeRoutes();
+  const store = createMemoryStore();
+  let saves = 0;
+  const save = store.save;
+  store.save = (data) => ((saves += 1), save(data));
+  const caps = { ...ALL, phases: 0, battery: false };
+  const { app, gladys, tick } = await setup({ routes, store, devices: [created(caps)] });
+  await app.start(CONFIG);
+  await app.idle();
+  const statuses = gladys.fake.connectionStatuses.length;
+  live(routes);
+  for (let k = 0; k < 5; k += 1) await tick(MINUTE);
+  assert.deepEqual(published(gladys, 'power_l1'), []);
+  assert.deepEqual(published(gladys, 'battery'), []);
+  assert.equal(saves, 1);
+  assert.equal(gladys.fake.connectionStatuses.length, statuses);
+});
+
+test('a reference date from /data in the future is now: a normal rise is never held', async () => {
+  const routes = bridgeRoutes();
+  const store = createMemoryStore({
+    [F('consumption_index')]: { last: { value: INDEX, at: NOW + 24 * HOUR }, held: null },
+  });
+  const { app, gladys, tick } = await setup({ routes, store, devices: [created()] });
+  await app.start(CONFIG);
+  await app.idle();
+  live(routes, { [OBIS.index]: 12345678.9 + 50_000 });
+  await tick(HOUR);
+  assert.equal(gladys.fake.lastState(F('consumption_index')), 12395.679);
+});
+
+test('an index register at 0: nothing published, nothing said held', async () => {
+  const routes = bridgeRoutes();
+  const { app, gladys, tick, logger } = await setup({ routes, devices: [created()] });
+  await app.start(CONFIG);
+  await app.idle();
+  live(routes, { [OBIS.index]: 0 });
+  await tick(MINUTE);
+  await tick(MINUTE);
+  assert.ok(!indexes(gladys).includes(0));
+  assert.equal(logger.lines.filter((l) => /held back/.test(l)).length, 0);
+});
+
+test('a Gladys value without a date is still a reference: a lower index is held', async () => {
+  const device = created(ALL, { consumption_index: [99999, 'not a date'] });
+  const { app, gladys } = await setup({ devices: [device] });
+  await app.start(CONFIG);
+  await app.idle();
+  assert.deepEqual(indexes(gladys), [99999]);
+  assert.match(status(gladys).message.fr, /a baissé/);
+});

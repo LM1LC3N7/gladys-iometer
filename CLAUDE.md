@@ -29,6 +29,7 @@ src/iometer/client.js    HTTP GETs, bounded body (64 KiB), timeouts, our own err
 src/iometer/model.js     OBIS registers and status, read into plain values (pure)
 src/devices.js           the Gladys device and its states (pure)
 src/guard.js             plausibility of the billed index (from gladys-p1-monitor, unchanged)
+src/counters.js          plain counters: never lower, spikes held (CounterFloor)
 src/store.js             /data (missing = empty, unreadable = never written over)
 src/config.js, src/i18n.js, src/constants.js
 ```
@@ -44,7 +45,7 @@ src/config.js, src/i18n.js, src/constants.js
   is a plain sensor. Never `publishEnergyConsumption`.
 - A value is a finite JSON number with a known unit, otherwise unknown; never
   published as 0. Plain counters never go down (floors, reset by an accepted
-  drop of the index).
+  drop of the index), a spike held, never a floor.
 - Clocks: monotonic for pacing, the session clock for the guard, the wall clock
   only for /data. Tests use clocks that move at every read, plus a real-clock
   test.

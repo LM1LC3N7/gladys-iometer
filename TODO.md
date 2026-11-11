@@ -48,6 +48,14 @@
   (floors from Gladys' last values, reset by an accepted drop of the index).
 - The index guard is `gladys-p1-monitor/src/guard.js` unchanged (its tariff
   helper removed), with its tests.
+- Plain counters (src/counters.js): never lower; a jump beyond the guard
+  margin held, taken back by a plausible value or after an hour of
+  consistent readings (not billed: repetition is enough, unlike the index).
+- A reading older than 2 h (against the bridge's Date header, else our
+  clock), or unchanged for 2 h: nothing of it is published (review r1, I1).
+- A Gladys value without a date is still an index reference, dated 0.
+- Addresses: dotted IPv4 must be 4 octets 0-255, never 0.x, multicast,
+  reserved, broadcast; IPv6 never :: nor ff00::/8.
 - /data: a missing file is empty, an unreadable one is never written over
   (the guard then starts from Gladys' last value).
 - mDNS: only listed in the status when no address is set; never taken by

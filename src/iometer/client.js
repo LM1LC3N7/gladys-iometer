@@ -92,6 +92,11 @@ export class IOmeterClient {
 
   /** One GET of a page, its JSON; a 404 is returned as `undefined`. */
   async get(path) {
+    return (await this.request(path)).data;
+  }
+
+  /** One GET: `{ data, date }`, `date` the Date header of the answer (ms) when readable. */
+  async request(path) {
     let response;
     let text;
     try {
@@ -107,14 +112,16 @@ export class IOmeterClient {
     } catch (err) {
       throw networkError(err);
     }
+    const date = Date.parse(response.headers?.get?.('date') ?? '');
+    const served = Number.isFinite(date) ? date : undefined;
     if (response.status === 404) {
-      return undefined;
+      return { data: undefined, date: served };
     }
     if (response.status < 200 || response.status >= 300) {
       throw new IOmeterError('http', `HTTP ${response.status}`, response.status);
     }
     try {
-      return JSON.parse(text);
+      return { data: JSON.parse(text), date: served };
     } catch {
       throw new IOmeterError('not_data', 'the device answered something that is not data');
     }
@@ -122,7 +129,7 @@ export class IOmeterClient {
 
   /** The last reading of the meter (the main page). */
   async readReading() {
-    const data = await this.get(PATHS.READING);
+    const { data, date } = await this.request(PATHS.READING);
     if (data === undefined) {
       // The library's IOmeterNoReadingsError: the reader has sent nothing yet.
       throw new IOmeterError('no_data', 'the bridge has no reading of the meter yet');
@@ -134,7 +141,8 @@ export class IOmeterClient {
     if (reading.empty) {
       throw new IOmeterError('no_data', 'the bridge has no reading of the meter yet');
     }
-    return reading;
+    // The clock of the bridge, to judge the age of the reading (src/app.js).
+    return { ...reading, servedAt: date };
   }
 
   /** The status of the bridge and of the reader (secondary): `{ none: true }` on a 404. */

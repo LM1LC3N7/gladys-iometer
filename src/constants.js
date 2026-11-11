@@ -65,5 +65,13 @@ export const INDEX_MAX_KW = 100;
 export const INDEX_SLACK_KWH = 0.5;
 /** A power above this (W, either sign) is a glitch: a home connection never draws nor injects as much. */
 export const POWER_MAX = 100_000;
+/** A plain counter jump held this long, each value plausible after the last, is taken. */
+export const COUNTER_JUMP_CONFIRM = HOUR;
+/**
+ * A reading whose time is older than this (against the Date of the answer,
+ * else our clock), or that has not changed for this long: nothing of it is
+ * published, the index neither.
+ */
+export const READING_TOO_OLD = 2 * HOUR;
 /** A counter above this (kWh) is a glitch. */
 export const COUNTER_MAX = 1_000_000_000;

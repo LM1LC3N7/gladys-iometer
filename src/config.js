@@ -27,17 +27,41 @@ export function parseAddress(raw) {
   }
   const bracketed = /^\[([0-9a-f:.]+)\](?::(\d{1,5}))?$/i.exec(text);
   if (bracketed) {
-    return withPort(`[${bracketed[1].toLowerCase()}]`, bracketed[2]);
+    return badIPv6(bracketed[1])
+      ? { error: 'invalid' }
+      : withPort(`[${bracketed[1].toLowerCase()}]`, bracketed[2]);
   }
   if (/^[0-9a-f:.]+$/i.test(text) && (text.match(/:/g) ?? []).length >= 2) {
-    return { address: `[${text.toLowerCase()}]` };
+    return badIPv6(text) ? { error: 'invalid' } : { address: `[${text.toLowerCase()}]` };
   }
   const match = /^(.*?)(?::(\d{1,5}))?$/.exec(text);
   const host = match[1];
   if (host.length > 253 || !host.split('.').every((label) => LABEL.test(label))) {
     return { error: 'invalid' };
   }
+  if (/^[\d.]+$/.test(host) && !unicastIPv4(host)) {
+    return { error: 'invalid' };
+  }
   return withPort(host.toLowerCase(), match[2]);
+}
+
+/**
+ * A dotted IPv4 a device can have: four numbers 0-255, never 0.x (0.0.0.0
+ * included), multicast (224-239), reserved or broadcast (240-255).
+ */
+function unicastIPv4(host) {
+  const parts = host.split('.');
+  if (parts.length !== 4 || !parts.every((p) => /^\d{1,3}$/.test(p) && Number(p) <= 255)) {
+    return false;
+  }
+  const first = Number(parts[0]);
+  return first !== 0 && first < 224;
+}
+
+/** The unspecified address (::) and multicast (ff00::/8): never a device. */
+function badIPv6(text) {
+  const lower = text.toLowerCase();
+  return /^[0:]+$/.test(lower) || lower.startsWith('ff');
 }
 
 function withPort(host, port) {

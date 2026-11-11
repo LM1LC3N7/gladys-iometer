@@ -48,7 +48,7 @@ export const FEATURE = {
   phasePower: (n) => `power_l${n}`,
 };
 
-/** The plain counters (kWh): never 0, never published lower than before. */
+/** The plain counters (kWh): never 0, never lower than before (src/counters.js). */
 export const PLAIN_COUNTERS = [
   FEATURE.CONSUMPTION_T1,
   FEATURE.CONSUMPTION_T2,
@@ -221,13 +221,13 @@ export function liveStates(external, reading) {
 
 /**
  * The indexes, once a minute. `consumptionIndex` is the value the IndexGuard
- * let through (undefined: not published this time). `floors` maps a plain
- * counter key to the lowest value it may take (src/app.js): a counter is never
- * published at 0 nor lower than before.
+ * let through (undefined: not published this time). `allow(key, value)` says
+ * whether a plain counter may be published (src/counters.js, value as Gladys
+ * holds it, 3 decimals); a counter is never published at 0.
  */
-export function indexStates(external, reading, consumptionIndex, floors = new Map()) {
+export function indexStates(external, reading, consumptionIndex, allow = () => true) {
   const counter = (key, value) =>
-    isNumber(value) && value > 0 && round(value, 3) >= (floors.get(key) ?? 0)
+    isNumber(value) && value > 0 && allow(key, round(value, 3))
       ? state(external, key, value, 3)
       : [];
   return [

@@ -84,6 +84,14 @@ export const T = {
       en: 'The meter gives no index right now: the consumption index waits for it.',
       fr: 'Le compteur ne donne pas d’index en ce moment : l’index de consommation l’attend.',
     },
+    old: {
+      en: 'The last reading of the meter is more than 2 hours old (reader off the meter, battery empty?): nothing of it is sent, the indexes neither.',
+      fr: 'Le dernier relevé du compteur date de plus de 2 heures (lecteur décroché, pile vide ?) : rien n’en est envoyé, les index non plus.',
+    },
+    counterJump: {
+      en: 'A tariff or injection index jumped further than a home can use: held, not sent. It is taken back when the meter gives a plausible value again, or once it has kept giving the new one for an hour.',
+      fr: 'Un index de tarif ou d’injection a sauté plus loin qu’un foyer ne peut consommer : retenu, non envoyé. Il reprend dès que le compteur redonne une valeur plausible, ou quand il a donné la nouvelle pendant une heure.',
+    },
     counterDown: {
       en: 'A tariff or injection index read lower than before: not sent (a counter never goes down). Accepting a held consumption index drop (a new meter) resets them.',
       fr: 'Un index de tarif ou d’injection a été lu plus bas qu’avant : non envoyé (un compteur ne baisse jamais). Accepter une baisse retenue de l’index de consommation (nouveau compteur) les remet à zéro.',

@@ -59,13 +59,19 @@ configuration accepts nothing.
 
 The tariff and injection indexes are never published lower than before nor at
 0; accepting a drop of the consumption index (a new meter) lets them start
-again from the new values.
+again from the new values. A jump of one of them further than a home can use
+is held too (it never becomes the new floor): it is taken back as soon as the
+meter gives a plausible value again, or once the meter has kept giving the new
+value, each reading plausible after the one before, for an hour (these
+indexes are not billed).
 
 ## What the status says
 
 - **Connected**, with notes: the status page not answering (the reading goes
   on), no new reading of the meter for 5 minutes (the power is then no longer
-  sent: reader off the meter, battery empty or out of radio range), no index
+  sent: reader off the meter, battery empty or out of radio range), a reading
+  more than 2 hours old, judged on the clock of the bridge when it gives one
+  (then nothing of it is sent, the indexes neither), no index
   register, a counter read lower than before, an index held back.
 - **Could not be read**: no answer, unreachable, HTTP error, an answer too
   large (over 64 KiB) or that is not an IOmeter one, no reading yet. The
@@ -73,6 +79,10 @@ again from the new values.
   to 5 minutes.
 - When Gladys does not give the configuration at a connection, the
   integration tries again the same way, without end.
+
+The **Test the connection** button and the **Discover** tab read the bridge
+at once, outside the 10-second rhythm and without waiting for a retry delay
+(one request at a time).
 
 ## Privacy
 

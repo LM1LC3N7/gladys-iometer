@@ -17,4 +17,5 @@ the notes of the version's GitHub Release.
   Gladys energy monitoring; net power, tariff and injection indexes, power per
   phase, reader battery, signals and link as sensors; plausibility guard of
   the billed index with a two-click "Accept the held index" action; network
-  discovery (mDNS) of the bridge from the Discover tab.
+  discovery (mDNS) of the bridge from the Discover tab; a reading more than 2
+  hours old is never published; plain counters held on a drop or a spike.

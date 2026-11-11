@@ -60,14 +60,20 @@ consommation repart de là. Enregistrer la configuration n'accepte rien.
 
 Les index de tarif et d'injection ne sont jamais publiés plus bas qu'avant ni
 à 0 ; accepter une baisse de l'index de consommation (nouveau compteur) les
-laisse repartir des nouvelles valeurs.
+laisse repartir des nouvelles valeurs. Un saut de l'un d'eux plus grand que ce
+qu'un foyer peut consommer est retenu aussi (il ne devient jamais le nouveau
+plancher) : il reprend dès que le compteur redonne une valeur plausible, ou
+quand le compteur a donné la nouvelle valeur pendant une heure, chaque relevé
+plausible après le précédent (ces index ne sont pas facturés).
 
 ## Ce que dit l'état
 
 - **Connecté**, avec des notes : la page d'état qui ne répond pas (la lecture
   continue), aucun nouveau relevé du compteur depuis 5 minutes (la puissance
   n'est alors plus envoyée : lecteur décroché, pile vide ou hors de portée
-  radio), pas de registre d'index, un compteur lu plus bas qu'avant, un index
+  radio), un relevé vieux de plus de 2 heures, jugé sur l'horloge du pont
+  quand il la donne (rien n'en est alors envoyé, les index non plus), pas de
+  registre d'index, un compteur lu plus bas qu'avant, un index
   retenu.
 - **N'a pas pu être lu** : pas de réponse, injoignable, erreur HTTP, réponse
   trop grande (plus de 64 Kio) ou qui n'est pas celle d'un IOmeter, aucun
@@ -75,6 +81,10 @@ laisse repartir des nouvelles valeurs.
   fois plus à chaque fois, jusqu'à 5 minutes.
 - Quand Gladys ne donne pas la configuration à une connexion, l'intégration
   réessaie de la même façon, sans fin.
+
+Le bouton **Tester la connexion** et l'onglet **Découverte** lisent le pont
+tout de suite, hors du rythme de 10 secondes et sans attendre un délai de
+nouvel essai (une requête à la fois).
 
 ## Vie privée
 

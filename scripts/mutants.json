@@ -66,16 +66,10 @@
     "to": "reading.power"
   },
   {
-    "name": "devices: counter floor",
-    "file": "src/devices.js",
-    "from": "round(value, 3) >= (floors.get(key) ?? 0)",
-    "to": "true"
-  },
-  {
     "name": "devices: counter never 0",
     "file": "src/devices.js",
-    "from": "isNumber(value) && value > 0 && round",
-    "to": "isNumber(value) && round"
+    "from": "isNumber(value) && value > 0 && allow",
+    "to": "isNumber(value) && allow"
   },
   {
     "name": "app: frozen reading not published",
@@ -106,18 +100,6 @@
     "file": "src/app.js",
     "from": "    this.cancelConfigRetry();\n    return this.serialize(() => this.doStop());",
     "to": "    return this.serialize(() => this.doStop());"
-  },
-  {
-    "name": "app: floors reset by an accepted drop",
-    "file": "src/app.js",
-    "from": "      this.floors = new Map(PLAIN_COUNTERS.map((key) => [key, 0]));\n",
-    "to": "\n"
-  },
-  {
-    "name": "app: counters compared rounded",
-    "file": "src/app.js",
-    "from": "round(meter[COUNTER_FIELD[key]], 3) < (",
-    "to": "meter[COUNTER_FIELD[key]] < ("
   },
   {
     "name": "app: mDNS service filtered",
@@ -160,5 +142,215 @@
     "file": "src/store.js",
     "from": "if (err?.code === 'ENOENT') return {};",
     "to": "return {};"
+  },
+  {
+    "name": "devices: plain counter allowed",
+    "file": "src/devices.js",
+    "from": "value > 0 && allow(key, round(value, 3))",
+    "to": "value > 0"
+  },
+  {
+    "name": "counters: lower value never sent",
+    "file": "src/counters.js",
+    "from": "    if (value < this.floor.value) {\n      this.state = 'down';\n      return false;\n    }\n",
+    "to": ""
+  },
+  {
+    "name": "counters: margin for a rise",
+    "file": "src/counters.js",
+    "from": "if (value - this.floor.value <= margin(this.floor.at, at)) {",
+    "to": "if (true) {"
+  },
+  {
+    "name": "counters: a spike never a floor",
+    "file": "src/counters.js",
+    "from": "    this.state = 'jump';\n    return false;",
+    "to": "    return this.take(value, at);"
+  },
+  {
+    "name": "counters: jump confirmed after an hour, not sooner",
+    "file": "src/counters.js",
+    "from": "at - p.since >= COUNTER_JUMP_CONFIRM",
+    "to": "at - p.since >= 0"
+  },
+  {
+    "name": "counters: pending broken by a lower value",
+    "file": "src/counters.js",
+    "from": "p && value >= p.value && value",
+    "to": "p && value"
+  },
+  {
+    "name": "app: floors reset by an accepted drop",
+    "file": "src/app.js",
+    "from": "      for (const floor of this.floors?.values() ?? []) floor.reset();\n",
+    "to": ""
+  },
+  {
+    "name": "app: reading too old by its age",
+    "file": "src/app.js",
+    "from": "return Number.isFinite(time) && served - time > READING_TOO_OLD;",
+    "to": "return false;"
+  },
+  {
+    "name": "app: reading frozen 2 h",
+    "file": "src/app.js",
+    "from": "if (this.readingStamp !== undefined && mono - this.freshAt >= READING_TOO_OLD) {",
+    "to": "if (false) {"
+  },
+  {
+    "name": "app: bridge Date preferred",
+    "file": "src/app.js",
+    "from": "Number.isFinite(meter.servedAt) ? meter.servedAt : this.now()",
+    "to": "this.now()"
+  },
+  {
+    "name": "app: indexes cut when too old",
+    "file": "src/app.js",
+    "from": "if (!old && (this.lastIndexAt",
+    "to": "if ((this.lastIndexAt"
+  },
+  {
+    "name": "app: held log only when held",
+    "file": "src/app.js",
+    "from": "!plausible && guard.held) {",
+    "to": "!plausible) {"
+  },
+  {
+    "name": "app: Gladys value without date is a reference",
+    "file": "src/app.js",
+    "from": "{ value, at: Number.isFinite(at) ? at : 0 }",
+    "to": "Number.isFinite(at) ? { value, at } : undefined"
+  },
+  {
+    "name": "accept: second click too soon",
+    "file": "src/app.js",
+    "from": "elapsed > ACCEPT_CONFIRM_WITHIN || elapsed < ACCEPT_CONFIRM_AFTER",
+    "to": "elapsed > ACCEPT_CONFIRM_WITHIN"
+  },
+  {
+    "name": "accept: second click too late",
+    "file": "src/app.js",
+    "from": "!pending || elapsed > ACCEPT_CONFIRM_WITHIN ||",
+    "to": "!pending ||"
+  },
+  {
+    "name": "accept: same guard",
+    "file": "src/app.js",
+    "from": "      pending.guard === guard &&\n",
+    "to": "\n"
+  },
+  {
+    "name": "accept: same reference",
+    "file": "src/app.js",
+    "from": "      held.from === listed.from &&\n",
+    "to": "\n"
+  },
+  {
+    "name": "accept: not lower than listed",
+    "file": "src/app.js",
+    "from": "      held.to >= listed.to &&\n",
+    "to": "\n"
+  },
+  {
+    "name": "accept: rise bounded by the margin",
+    "file": "src/app.js",
+    "from": "      held.to - listed.to <= margin(pending.listedAt, now);",
+    "to": "      true;"
+  },
+  {
+    "name": "app: /data state cleared for a new device",
+    "file": "src/app.js",
+    "from": "        delete kept[indexId];\n",
+    "to": "\n"
+  },
+  {
+    "name": "app: a read in flight never doubled",
+    "file": "src/app.js",
+    "from": "      if (this.busyGeneration === this.generation) {\n        return this.busy;",
+    "to": "      if (false) {\n        return this.busy;"
+  },
+  {
+    "name": "app: status deduplicated",
+    "file": "src/app.js",
+    "from": "    if (key === this.lastStatus) {",
+    "to": "    if (false) {"
+  },
+  {
+    "name": "app: /data saved only on change",
+    "file": "src/app.js",
+    "from": "    if (key === this.savedGuard) {",
+    "to": "    if (false) {"
+  },
+  {
+    "name": "app: /data date bounded by the session clock",
+    "file": "src/app.js",
+    "from": "Math.min(ref.at - offset, sessionNow)",
+    "to": "ref.at - offset"
+  },
+  {
+    "name": "app: only the created features",
+    "file": "src/app.js",
+    "from": "? states.filter((s) => features.has(s.device_feature_external_id))",
+    "to": "? states"
+  },
+  {
+    "name": "constants: request timeout",
+    "file": "src/constants.js",
+    "from": "export const HTTP_TIMEOUT = 10_000;",
+    "to": "export const HTTP_TIMEOUT = 10_000_000;"
+  },
+  {
+    "name": "model: counter bound",
+    "file": "src/iometer/model.js",
+    "from": "return kwh <= COUNTER_MAX ? kwh : undefined;",
+    "to": "return kwh;"
+  },
+  {
+    "name": "model: OBIS length bound",
+    "file": "src/iometer/model.js",
+    "from": " || register.obis.length > 40",
+    "to": ""
+  },
+  {
+    "name": "model: time length bound",
+    "file": "src/iometer/model.js",
+    "from": "typeof reading.time === 'string' && reading.time.length <= 40",
+    "to": "typeof reading.time === 'string'"
+  },
+  {
+    "name": "store: size bound",
+    "file": "src/store.js",
+    "from": "if (text.length > MAX_STATE_BYTES) throw",
+    "to": "if (false) throw"
+  },
+  {
+    "name": "address: dotted IPv4 checked",
+    "file": "src/config.js",
+    "from": "if (/^[\\d.]+$/.test(host) && !unicastIPv4(host)) {",
+    "to": "if (false) {"
+  },
+  {
+    "name": "address: octets 0-255",
+    "file": "src/config.js",
+    "from": "Number(p) <= 255",
+    "to": "true"
+  },
+  {
+    "name": "address: multicast and broadcast",
+    "file": "src/config.js",
+    "from": "first !== 0 && first < 224",
+    "to": "first !== 0"
+  },
+  {
+    "name": "address: 0.x refused",
+    "file": "src/config.js",
+    "from": "first !== 0 && first < 224",
+    "to": "first < 224"
+  },
+  {
+    "name": "address: IPv6 :: and multicast",
+    "file": "src/config.js",
+    "from": "return /^[0:]+$/.test(lower) || lower.startsWith('ff');",
+    "to": "return false;"
   }
 ]
